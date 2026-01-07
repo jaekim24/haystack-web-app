@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Macless Haystack - FindMy Tracker</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" type="image/png" href="assets/favicon.png">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Using skypack for ES module loading of noble-curves -->
+    <script type="module">
+        import { sha256 } from 'https://cdn.skypack.dev/@noble/hashes@1.4.0/sha256';
+        import { hmac } from 'https://cdn.skypack.dev/@noble/hashes@1.4.0/hmac';
+        import { randomBytes } from 'https://cdn.skypack.dev/@noble/hashes@1.4.0/utils';
+        import { weierstrass } from 'https://cdn.skypack.dev/@noble/curves@1.8.0/abstract/weierstrass';
+        import { Field } from 'https://cdn.skypack.dev/@noble/curves@1.8.0/abstract/modular';
+        import { bytesToHex, hexToBytes } from 'https://cdn.skypack.dev/@noble/curves@1.8.0/abstract/utils';
+
+        // Load @noble/ciphers for AES-GCM
+        // gcm is the mode, returns a cipher function when called with key and nonce
+        import { gcm } from 'https://esm.sh/@noble/ciphers/aes';
+
+        // Define secp224r1 (P-224) curve using noble-curves weierstrass API
+        // Parameters from: https://std.neuromancer.sk/secg/secp224r1/
+        const secp224r1 = weierstrass({
+            a: 0xfffffffffffffffffffffffffffffffefffffffffffffffffffffffen,
+            b: 0xb4050a850c04b3abf54132565044b0b7d7bfd8ba270b39432355ffb4n,
+            Fp: Field(0xffffffffffffffffffffffffffffffff000000000000000000000001n),
+            n: 0xffffffffffffffffffffffffffff16a2e0b8f03e13dd29455c5c2a3dn,
+            h: 1n,
+            Gx: 0xb70e0cbd6bb4bf7f321390b94a03c1d356c21122343280d6115c1d21n,
+            Gy: 0xbd376388b5f723fb4c22dfe6cd4375a05a07476444d5819985007e34n,
+            hash: sha256,
+            hmac: (key, ...msgs) => {
+                const combined = msgs.length > 0 ? (msgs[0] instanceof Uint8Array ? msgs[0] : new Uint8Array(0)) : new Uint8Array(0);
+                return hmac(sha256, key, combined);
+            },
+            randomBytes,
+        });
+
+        // Export to global scope for non-module code
+        window.secp224r1 = secp224r1;
+        window.nobleUtils = { bytesToHex, hexToBytes };
+        window.nobleSha256 = sha256;  // Export sha256 for fallback
+        // Export gcm mode for AES-GCM decryption
+        // Usage: const cipher = gcm(key, iv); const decrypted = cipher.decrypt(ciphertextWithTag);
+        window.nobleGcm = gcm;
+    </script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <img src="assets/OpenHaystackIcon.png" alt="Logo" class="app-logo">
+                <h1>Macless Haystack</h1>
+            </div>
+            <button class="settings-btn" id="settingsBtn" title="Settings">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3m15.364 6.364l-4.243-4.243M9.879 9.879L5.636 5.636m12.728 12.728l-4.243-4.243M9.879 14.121l-4.243 4.243"></path>
+                </svg>
+            </button>
+        </header>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Tab Navigation -->
+            <nav class="tab-nav">
+                <button class="tab-btn active" data-tab="map">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                        <circle cx="12" cy="10" r="3"></circle>
+                    </svg>
+                    Map
+                </button>
+                <button class="tab-btn" data-tab="accessories">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path>
+                        <line x1="7" y1="7" x2="7.01" y2="7"></line>
+                    </svg>
+                    Accessories
+                </button>
+            </nav>
+
+            <!-- Map Tab -->
+            <section id="mapTab" class="tab-content active">
+                <div class="map-controls">
+                    <button class="refresh-btn" id="refreshBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M23 4v6h-6"></path>
+                            <path d="M1 20v-6h6"></path>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                        </svg>
+                        Refresh Locations
+                    </button>
+                    <select id="daysFilter" class="days-filter">
+                        <option value="1">Last 24 hours</option>
+                        <option value="3">Last 3 days</option>
+                        <option value="7" selected>Last 7 days</option>
+                        <option value="14">Last 14 days</option>
+                        <option value="30">Last 30 days</option>
+                    </select>
+                </div>
+                <div id="map" class="map-container"></div>
+                <div class="accessories-list" id="accessoriesList">
+                    <!-- Accessory items will be populated here -->
+                </div>
+            </section>
+
+            <!-- Accessories Tab -->
+            <section id="accessoriesTab" class="tab-content">
+                <div class="accessories-header">
+                    <h2>My Accessories</h2>
+                    <button class="add-btn" id="addAccessoryBtn">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                        Add Accessory
+                    </button>
+                </div>
+                <div class="accessories-grid" id="accessoriesGrid">
+                    <!-- Accessory cards will be populated here -->
+                </div>
+                <div class="import-export-section">
+                    <button class="secondary-btn" id="importBtn">Import JSON</button>
+                    <button class="secondary-btn" id="exportBtn">Export JSON</button>
+                    <input type="file" id="fileInput" accept=".json" style="display: none;">
+                </div>
+            </section>
+        </main>
+
+        <!-- Floating Action Button -->
+        <button class="fab" id="fabBtn">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+        </button>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button class="close-btn" id="closeSettingsBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label for="endpointUrl">Endpoint URL</label>
+                    <input type="text" id="endpointUrl" placeholder="http://localhost:6176" value="http://localhost:6176">
+                </div>
+                <div class="setting-group">
+                    <label for="endpointUser">Username (optional)</label>
+                    <input type="text" id="endpointUser" placeholder="">
+                </div>
+                <div class="setting-group">
+                    <label for="endpointPass">Password (optional)</label>
+                    <input type="password" id="endpointPass" placeholder="">
+                </div>
+                <div class="setting-group">
+                    <label for="daysToFetch">Default Days to Fetch</label>
+                    <input type="number" id="daysToFetch" value="7" min="1" max="30">
+                </div>
+                <div class="setting-group checkbox-group">
+                    <input type="checkbox" id="fetchOnStartup" checked>
+                    <label for="fetchOnStartup">Fetch locations on startup</label>
+                </div>
+                <div class="setting-group checkbox-group">
+                    <input type="checkbox" id="darkMode">
+                    <label for="darkMode">Dark Mode</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="secondary-btn" id="testConnectionBtn">Test Connection</button>
+                <button class="primary-btn" id="saveSettingsBtn">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add/Edit Accessory Modal -->
+    <div id="accessoryModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="accessoryModalTitle">Add Accessory</h2>
+                <button class="close-btn" id="closeAccessoryBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label>Import from device.json</label>
+                    <button type="button" class="secondary-btn" id="importDeviceJsonBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        Upload device.json
+                    </button>
+                    <input type="file" id="deviceJsonInput" accept=".json" style="display: none;">
+                    <small style="display: block; margin-top: 4px; opacity: 0.7;">Upload a device.json file to auto-fill the form</small>
+                </div>
+                <hr style="margin: 16px 0; border: none; border-top: 1px solid var(--border);">
+                <div class="setting-group">
+                    <label for="accessoryName">Name</label>
+                    <input type="text" id="accessoryName" placeholder="My AirTag">
+                </div>
+                <div class="setting-group">
+                    <label for="accessoryId">Device ID</label>
+                    <input type="text" id="accessoryId" placeholder="e.g., 001122334455">
+                </div>
+                <div class="setting-group">
+                    <label for="accessoryKey">Private Key (Base64)</label>
+                    <textarea id="accessoryKey" rows="3" placeholder="Base64 encoded private key"></textarea>
+                </div>
+                <div class="setting-group">
+                    <label for="accessoryColor">Color</label>
+                    <div class="color-picker" id="colorPicker">
+                        <button class="color-btn" data-color="#3B82F6" style="background: #3B82F6"></button>
+                        <button class="color-btn" data-color="#EF4444" style="background: #EF4444"></button>
+                        <button class="color-btn" data-color="#10B981" style="background: #10B981"></button>
+                        <button class="color-btn" data-color="#F59E0B" style="background: #F59E0B"></button>
+                        <button class="color-btn" data-color="#8B5CF6" style="background: #8B5CF6"></button>
+                        <button class="color-btn" data-color="#EC4899" style="background: #EC4899"></button>
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <label for="accessoryIcon">Icon</label>
+                    <div class="icon-picker" id="iconPicker">
+                        <button class="icon-btn active" data-icon="tag">🏷️ Tag</button>
+                        <button class="icon-btn" data-icon="key">🔑 Key</button>
+                        <button class="icon-btn" data-icon="bag">🎒 Bag</button>
+                        <button class="icon-btn" data-icon="bike">🚲 Bike</button>
+                        <button class="icon-btn" data-icon="car">🚗 Car</button>
+                        <button class="icon-btn" data-icon="pet">🐕 Pet</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="secondary-btn" id="cancelAccessoryBtn">Cancel</button>
+                <button class="primary-btn" id="saveAccessoryBtn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
