@@ -50,3 +50,9 @@ to create the icons and then, to create a distributable application package run
 $ flutter build [linux|apk|web]
 ```
 The resulting build artifacts can be found in the `build` folder. To deploy the artifacts to a device consult the platform specific documentation.
+
+
+1. able to generate the adv hash key from private key
+2. decrypt encrytped location data with private key
+
+
