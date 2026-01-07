@@ -873,56 +873,53 @@ async function fetchLocations() {
     refreshBtn.disabled = true;
 
     try {
-        // Generate hashed keys for all active accessories
-        const hashedKeys = [];
-        console.log('[DEBUG] Generating hashed keys...');
+        const allLocations = [];
+
+        // Fetch locations for each device separately
         for (const accessory of activeAccessories) {
-            const hashedKey = await getHashedAdvertisementKey(accessory.privateKey);
-            hashedKeys.push(hashedKey);
-            console.log(`[DEBUG] ${accessory.name} (${accessory.deviceId}) -> hashedKey: ${hashedKey}`);
-        }
+            console.log(`[DEBUG] Fetching for ${accessory.name}...`);
 
-        console.log('[DEBUG] Total hashed keys:', hashedKeys.length);
+            try {
+                // Generate hashed key for this accessory
+                const hashedKey = await getHashedAdvertisementKey(accessory.privateKey);
+                console.log(`[DEBUG] ${accessory.name} (${accessory.deviceId}) -> hashedKey: ${hashedKey}`);
 
-        // Fetch reports from backend
-        const reports = await fetchLocationReportsFromEndpoint(hashedKeys, days);
+                // Fetch reports for this device only
+                const reports = await fetchLocationReportsFromEndpoint([hashedKey], days);
 
-        // Decrypt each report
-        const locations = [];
-        for (const report of reports) {
-            // Find matching accessory
-            const accessory = activeAccessories.find(async (a) => {
-                const hashedKey = await getHashedAdvertisementKey(a.privateKey);
-                return hashedKey === report.id;
-            });
-
-            if (accessory) {
-                try {
-                    const decrypted = await decryptReport(report, accessory.privateKey);
-                    locations.push({
-                        accessoryId: accessory.id,
-                        accessoryName: accessory.name,
-                        lat: decrypted.latitude,
-                        lng: decrypted.longitude,
-                        timestamp: decrypted.timestamp.getTime(),
-                        accuracy: decrypted.accuracy,
-                        confidence: decrypted.confidence,
-                        batteryStatus: decrypted.batteryStatus
-                    });
-                } catch (decryptError) {
-                    console.error('Failed to decrypt report:', decryptError);
+                // Decrypt reports for this device
+                for (const report of reports) {
+                    try {
+                        const decrypted = await decryptReport(report, accessory.privateKey);
+                        allLocations.push({
+                            accessoryId: accessory.id,
+                            accessoryName: accessory.name,
+                            lat: decrypted.latitude,
+                            lng: decrypted.longitude,
+                            timestamp: decrypted.timestamp.getTime(),
+                            accuracy: decrypted.accuracy,
+                            confidence: decrypted.confidence,
+                            batteryStatus: decrypted.batteryStatus
+                        });
+                    } catch (decryptError) {
+                        console.error(`Failed to decrypt report for ${accessory.name}:`, decryptError);
+                    }
                 }
+
+                console.log(`[DEBUG] ${accessory.name}: got ${reports.length} report(s)`);
+            } catch (deviceError) {
+                console.error(`Failed to fetch for ${accessory.name}:`, deviceError);
             }
         }
 
         // Sort by timestamp
-        locations.sort((a, b) => a.timestamp - b.timestamp);
+        allLocations.sort((a, b) => a.timestamp - b.timestamp);
 
-        state.locations = locations;
+        state.locations = allLocations;
         updateMapMarkers();
-        showToast(`Fetched ${locations.length} location(s)`, 'success');
+        showToast(`Fetched ${allLocations.length} location(s) from ${activeAccessories.length} device(s)`, 'success');
 
-        if (locations.length === 0) {
+        if (allLocations.length === 0) {
             showToast('No locations found. Check your endpoint connection and keys.', 'warning');
         }
     } catch (error) {
