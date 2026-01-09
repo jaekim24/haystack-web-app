@@ -564,6 +564,12 @@ function initEventListeners() {
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
                 modal.classList.remove('active');
+                // Remove settings-visible class if closing settings modal
+                const nav = document.querySelector('.bottom-nav');
+                nav.classList.remove('settings-visible');
+                // Restore location button as active
+                document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('nav-btn-active'));
+                document.getElementById('locationBtn').classList.add('nav-btn-active');
             }
         });
     });
@@ -585,6 +591,16 @@ function handleLocationBtn() {
     document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('nav-btn-active'));
     document.getElementById('locationBtn').classList.add('nav-btn-active');
 
+    // Close settings if open
+    document.getElementById('settingsModal').classList.remove('active');
+    document.querySelector('.bottom-nav').classList.remove('settings-visible');
+
+    // Close device detail if open
+    document.getElementById('deviceDetailPanel').classList.remove('active');
+    document.querySelector('.bottom-nav').classList.remove('detail-visible');
+    state.selectedDeviceId = null;
+    clearPathLines();
+
     // Hide the devices panel and make nav pill-shaped
     const panel = document.getElementById('bottomPanel');
     const nav = document.querySelector('.bottom-nav');
@@ -603,6 +619,16 @@ function handleDevicesBtn() {
     document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('nav-btn-active'));
     document.getElementById('devicesBtn').classList.add('nav-btn-active');
 
+    // Close settings if open
+    document.getElementById('settingsModal').classList.remove('active');
+    document.querySelector('.bottom-nav').classList.remove('settings-visible');
+
+    // Close device detail if open
+    document.getElementById('deviceDetailPanel').classList.remove('active');
+    document.querySelector('.bottom-nav').classList.remove('detail-visible');
+    state.selectedDeviceId = null;
+    clearPathLines();
+
     // Show the devices panel and connect nav to panel
     const panel = document.getElementById('bottomPanel');
     const nav = document.querySelector('.bottom-nav');
@@ -615,8 +641,8 @@ function handleDevicesBtn() {
         panel._setExpanded(true);
     }
 
-    // Filter devices to show only those in current map frame
-    filterDevicesInFrame();
+    // Show all devices
+    renderDevicesList();
 }
 
 async function handleRefresh() {
@@ -746,13 +772,17 @@ function selectDevice(accessoryId) {
     const nav = document.querySelector('.bottom-nav');
     panel.classList.add('hidden');
     nav.classList.remove('panel-visible');
+    nav.classList.add('detail-visible');
 
     // Show detail panel
     detailPanel.classList.add('active');
 }
 
 function closeDeviceDetail() {
-    document.getElementById('deviceDetailPanel').classList.remove('active');
+    const detailPanel = document.getElementById('deviceDetailPanel');
+    const nav = document.querySelector('.bottom-nav');
+    detailPanel.classList.remove('active');
+    nav.classList.remove('detail-visible');
     state.selectedDeviceId = null;
     clearPathLines();
 
@@ -760,7 +790,6 @@ function closeDeviceDetail() {
     const devicesBtn = document.getElementById('devicesBtn');
     if (devicesBtn.classList.contains('nav-btn-active')) {
         const panel = document.getElementById('bottomPanel');
-        const nav = document.querySelector('.bottom-nav');
         panel.classList.remove('hidden');
         panel.classList.add('expanded');
         nav.classList.add('panel-visible');
@@ -911,11 +940,37 @@ function saveSettings() {
 }
 
 function openSettingsModal() {
-    document.getElementById('settingsModal').classList.add('active');
+    const modal = document.getElementById('settingsModal');
+    const nav = document.querySelector('.bottom-nav');
+    const settingsBtn = document.getElementById('settingsBtn');
+
+    // Update active state
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('nav-btn-active'));
+    settingsBtn.classList.add('nav-btn-active');
+
+    // Close device detail if open
+    document.getElementById('deviceDetailPanel').classList.remove('active');
+    nav.classList.remove('detail-visible');
+    state.selectedDeviceId = null;
+    clearPathLines();
+
+    // Hide the devices panel
+    document.getElementById('bottomPanel').classList.add('hidden');
+    nav.classList.remove('panel-visible');
+
+    modal.classList.add('active');
+    nav.classList.add('settings-visible');
 }
 
 function closeSettingsModal() {
-    document.getElementById('settingsModal').classList.remove('active');
+    const modal = document.getElementById('settingsModal');
+    const nav = document.querySelector('.bottom-nav');
+    modal.classList.remove('active');
+    nav.classList.remove('settings-visible');
+
+    // Restore location button as active
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('nav-btn-active'));
+    document.getElementById('locationBtn').classList.add('nav-btn-active');
 }
 
 function applyDarkMode() {
