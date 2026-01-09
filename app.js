@@ -18,9 +18,11 @@ const state = {
     },
     map: null,
     markers: [],
+    pathPolylines: [],
     currentAccessoryId: null,
     selectedColor: '#3B82F6',
-    selectedIcon: 'tag'
+    selectedIcon: 'tag',
+    selectedDeviceId: null
 };
 
 // Icon mapping
@@ -71,7 +73,6 @@ function bytesToHex(bytes) {
 }
 
 // SHA-256 hash (using @noble/hashes via module import)
-// The sha256 function is imported from @noble/hashes and available as window.nobleSha256
 async function sha256(data) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
 
@@ -117,16 +118,10 @@ async function initCrypto() {
 }
 
 // Hash public key using SHA256 and encode as base64
-// This computes the hashed advertisement key
 async function hashPublicKey(privateKeyBase64) {
-    // First, derive public key from private key
     const privateKeyBytes = base64ToBytes(privateKeyBase64);
     const publicKeyBytes = await derivePublicKeyFromPrivate(privateKeyBytes);
-
-    // SHA-256 hash of the public key
     const hash = await sha256(publicKeyBytes);
-
-    // Return base64 encoded hash
     return bytesToBase64(hash);
 }
 
@@ -136,20 +131,14 @@ async function derivePublicKeyFromPrivate(privateKeyBytes) {
         throw new Error('secp224r1 curve not loaded');
     }
 
-    // Convert bytes to hex for noble-curves
     const privHex = bytesToHex(privateKeyBytes);
-
-    // Get public key from secp224r1
     const pubBytes = window.secp224r1.getPublicKey(privHex);
-
     return pubBytes;
 }
 
 // Get advertisement key (28-byte public key without first byte)
 async function getAdvertisementKey(privateKeyBase64) {
     const publicKeyBytes = await derivePublicKeyFromPrivate(base64ToBytes(privateKeyBase64));
-
-    // Drop first byte (compression flag) to get 28-byte advertisement key
     return publicKeyBytes.slice(1);
 }
 
@@ -170,21 +159,15 @@ async function ecdh(ephemeralPublicKeyBytes, privateKeyBase64) {
     const privHex = bytesToHex(privateKeyBytes);
     const pubHex = bytesToHex(ephemeralPublicKeyBytes);
 
-    // Get shared secret using ECDH
     const shared = window.secp224r1.getSharedSecret(privHex, pubHex);
-
-    // Remove first byte (parity byte) to get 28-byte X coordinate
     return shared.slice(1);
 }
 
 // KDF - ANSI X.963 Key Derivation Function
 async function kdf(secret, ephemeralKey) {
-    // SHA-256(secret || counter || ephemeralKey)
-    // counter = 1 (4 bytes, big endian)
-
     const combined = new Uint8Array(secret.length + 4 + ephemeralKey.length);
     combined.set(secret, 0);
-    combined.set(new Uint8Array([0, 0, 0, 1]), secret.length); // counter = 1
+    combined.set(new Uint8Array([0, 0, 0, 1]), secret.length);
     combined.set(ephemeralKey, secret.length + 4);
 
     return sha256(combined);
@@ -192,11 +175,9 @@ async function kdf(secret, ephemeralKey) {
 
 // AES-GCM Decryption using Web Crypto API or noble/ciphers fallback
 async function decryptPayload(cipherText, symmetricKey, tag) {
-    // Split symmetric key: first 16 bytes for decryption key, rest for IV
     const decryptionKey = symmetricKey.slice(0, 16);
     const iv = symmetricKey.slice(16);
 
-    // Try Web Crypto API first (requires secure context: HTTPS or localhost)
     if (window.crypto && window.crypto.subtle) {
         try {
             const cryptoKey = await window.crypto.subtle.importKey(
@@ -207,12 +188,10 @@ async function decryptPayload(cipherText, symmetricKey, tag) {
                 ['decrypt']
             );
 
-            // Combine cipher text and tag for GCM decryption
             const dataToDecrypt = new Uint8Array(cipherText.length + tag.length);
             dataToDecrypt.set(cipherText);
             dataToDecrypt.set(tag, cipherText.length);
 
-            // Decrypt
             const decrypted = await window.crypto.subtle.decrypt(
                 {
                     name: 'AES-GCM',
@@ -229,21 +208,15 @@ async function decryptPayload(cipherText, symmetricKey, tag) {
         }
     }
 
-    // Fallback: Use noble/ciphers gcm (works in non-secure contexts)
     if (window.nobleGcm) {
         try {
-            // noble/ciphers GCM expects ciphertext || tag
             const combined = new Uint8Array(cipherText.length + tag.length);
             combined.set(cipherText);
             combined.set(tag, cipherText.length);
 
-            console.log('[DEBUG] noble/ciphers decrypt, keyLen:', decryptionKey.length, 'ivLen:', iv.length, 'dataLen:', combined.length);
-
-            // Create cipher with GCM mode
             const cipher = window.nobleGcm(decryptionKey, iv);
             const decrypted = cipher.decrypt(combined);
 
-            console.log('[DEBUG] Decrypted length:', decrypted.length);
             return decrypted;
         } catch (e) {
             console.error('[ERROR] noble/ciphers decryption failed:', e);
@@ -256,10 +229,8 @@ async function decryptPayload(cipherText, symmetricKey, tag) {
 // Main decryption function - decrypts a FindMy report
 async function decryptReport(report, privateKeyBase64) {
     try {
-        // Decode the payload
         let payloadData = base64ToBytes(report.payload);
 
-        // Handle 89-byte payload (remove one byte for alignment)
         if (payloadData.length > 88) {
             const modified = new Uint8Array(payloadData.length - 1);
             modified.set(payloadData.slice(0, 4), 0);
@@ -267,32 +238,19 @@ async function decryptReport(report, privateKeyBase64) {
             payloadData = modified;
         }
 
-        // Parse payload structure:
-        // [0-4]: timestamp (big-endian uint32)
-        // [4]: confidence (uint8)
-        // [5-62]: ephemeral public key (57 bytes, compressed format)
-        // [62-72]: encrypted data (10 bytes)
-        // [72-88]: authentication tag (16 bytes)
         const ephemeralKeyBytes = payloadData.slice(5, 62);
         const encData = payloadData.slice(62, 72);
         const tag = payloadData.slice(72);
 
-        // Decode timestamp and confidence (unencrypted portion)
         const seenTimeStamp = new DataView(payloadData.buffer).getUint32(0, false);
         const timestamp = new Date(Date.UTC(2001, 0, 1));
         timestamp.setSeconds(seenTimeStamp);
         const confidence = payloadData[4];
 
-        // ECDH key exchange
         const sharedSecret = await ecdh(ephemeralKeyBytes, privateKeyBase64);
-
-        // Key derivation (ANSI X.963)
         const derivedKey = await kdf(sharedSecret, ephemeralKeyBytes);
-
-        // Decrypt payload using AES-GCM
         const decryptedPayload = await decryptPayload(encData, derivedKey, tag);
 
-        // Decode decrypted payload to get location data
         return decodePayload(decryptedPayload, report.datePublished, timestamp, confidence);
     } catch (error) {
         console.error('Decrypt report error:', error);
@@ -304,24 +262,20 @@ async function decryptReport(report, privateKeyBase64) {
 function decodePayload(payload, datePublished, timestamp, confidence) {
     const view = new DataView(payload.buffer);
 
-    // Parse latitude and longitude (in units of 0.0000001 degrees)
     const latitudeRaw = view.getUint32(0, false);
     const longitudeRaw = view.getUint32(4, false);
     const accuracy = view.getUint8(8);
     const status = view.getUint8(9);
 
-    // Convert to degrees
     let latitude = latitudeRaw / 10000000.0;
     let longitude = longitudeRaw / 10000000.0;
 
-    // Handle overflow correction (from original Flutter code)
     const pointCorrection = 0xFFFFFFFF / 10000000;
     if (latitude > 90) latitude -= pointCorrection;
     if (latitude < -90) latitude += pointCorrection;
     if (longitude > 180) longitude -= pointCorrection;
     if (longitude < -180) longitude += pointCorrection;
 
-    // Decode battery status
     let batteryStatus = null;
     if ((status & 0x20) !== 0 || status > 0) {
         const batteryLevel = (status >> 6) & 0x03;
@@ -344,22 +298,18 @@ function decodePayload(payload, datePublished, timestamp, confidence) {
 // API FUNCTIONS
 // ============================================
 
-// Fetch location reports from backend endpoint
 async function fetchLocationReportsFromEndpoint(hashedKeys, daysToFetch) {
     const url = state.settings.endpointUrl;
 
-    // Prepare headers
     const headers = {
         'Content-Type': 'application/json'
     };
 
-    // Add basic auth if credentials provided
     if (state.settings.endpointUser || state.settings.endpointPass) {
         const credentials = btoa(`${state.settings.endpointUser}:${state.settings.endpointPass}`);
         headers['Authorization'] = `Basic ${credentials}`;
     }
 
-    // Prepare request body
     const body = JSON.stringify({
         ids: hashedKeys,
         days: daysToFetch
@@ -367,11 +317,10 @@ async function fetchLocationReportsFromEndpoint(hashedKeys, daysToFetch) {
 
     console.log('[DEBUG] Fetching from:', url);
     console.log('[DEBUG] Request body:', body);
-    console.log('[DEBUG] Headers:', headers);
 
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
         const response = await fetch(url, {
             method: 'POST',
@@ -381,8 +330,6 @@ async function fetchLocationReportsFromEndpoint(hashedKeys, daysToFetch) {
         });
 
         clearTimeout(timeoutId);
-
-        console.log('[DEBUG] Response status:', response.status);
 
         if (response.status === 401) {
             throw new Error('Authentication failed. Check your username/password.');
@@ -394,17 +341,12 @@ async function fetchLocationReportsFromEndpoint(hashedKeys, daysToFetch) {
 
         if (response.status !== 200) {
             const errorText = await response.text();
-            console.error('[DEBUG] Error response:', errorText);
             throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
 
         const data = await response.json();
-        console.log('[DEBUG] Response data:', data);
-        console.log('[DEBUG] Results count:', data.results?.length || 0);
-
         return data.results || [];
     } catch (error) {
-        console.error('[DEBUG] Fetch error:', error);
         if (error.name === 'AbortError') {
             throw new Error('Request timed out (30s). Check if endpoint is running.');
         }
@@ -416,7 +358,6 @@ async function fetchLocationReportsFromEndpoint(hashedKeys, daysToFetch) {
 // INITIALIZATION
 // ============================================
 
-// Initialize App
 document.addEventListener('DOMContentLoaded', async () => {
     await initCrypto();
     loadSettings();
@@ -425,6 +366,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     initEventListeners();
     applyDarkMode();
 
+    // Set default state: map view with devices panel hidden
+    const panel = document.getElementById('bottomPanel');
+    panel.classList.add('hidden');
+
     if (state.settings.fetchOnStartup) {
         fetchLocations();
     }
@@ -432,38 +377,155 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Initialize Map
 function initMap() {
-    state.map = L.map('map').setView([0, 0], 2);
+    state.map = L.map('map', {
+        zoomControl: false
+    }).setView([0, 0], 2);
 
     // Satellite layer (Esri World Imagery) - base layer
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri',
+        attribution: '',
         maxZoom: 19
     }).addTo(state.map);
 
-    // Hybrid overlay (labels on top of satellite)
-    L.tileLayer('https://stamen-tiles-{s}.a.ssl.fastly.net/toner-lines/{z}/{x}/{y}{r}.png', {
-        attribution: 'Map tiles by <a href="http://stamen.com">Stamen Design</a>',
-        maxZoom: 19,
-        opacity: 0.5
+    // Hybrid overlay - Reference overlay with labels and roads
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '',
+        maxZoom: 19
     }).addTo(state.map);
+
+    // Roads overlay for hybrid view
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '',
+        maxZoom: 19
+    }).addTo(state.map);
+}
+
+// ============================================
+// PANEL DRAG/SWIPE FUNCTIONALITY
+// ============================================
+
+function initPanelDrag() {
+    const panel = document.getElementById('bottomPanel');
+    const handle = document.getElementById('panelHandle');
+    const devicesList = document.getElementById('devicesList');
+
+    let startY = 0;
+    let currentY = 0;
+    let isDragging = false;
+    let panelHeight = 0;
+    let isExpanded = false;
+
+    const collapsedHeight = 180;
+    const expandedHeight = window.innerHeight * 0.65;
+
+    // Store state on panel element for cross-function access
+    panel._isExpanded = () => isExpanded;
+    panel._setExpanded = (val) => { isExpanded = val; };
+
+    function onStart(e) {
+        // If touching the devices list and it's scrollable, don't start panel drag
+        if (e.target.closest('#devicesList') && isExpanded) {
+            const list = e.target.closest('#devicesList');
+            // Allow scrolling if list is scrollable
+            if (list.scrollHeight > list.clientHeight) {
+                return;
+            }
+        }
+
+        isDragging = true;
+        startY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+        panelHeight = panel.offsetHeight;
+        panel.classList.add('dragging');
+    }
+
+    function onMove(e) {
+        if (!isDragging) return;
+
+        currentY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+        const diff = startY - currentY;
+
+        // Calculate new height
+        let newHeight = isExpanded ? expandedHeight + diff : collapsedHeight + diff;
+
+        // Constrain height
+        newHeight = Math.max(150, Math.min(expandedHeight, newHeight));
+        panel.style.height = newHeight + 'px';
+    }
+
+    function onEnd(e) {
+        if (!isDragging) return;
+        isDragging = false;
+        panel.classList.remove('dragging');
+
+        const currentHeight = panel.offsetHeight;
+        const middleThreshold = (collapsedHeight + expandedHeight) / 2;
+
+        // Snap to expanded or collapsed based on current position
+        if (currentHeight > middleThreshold) {
+            panel.classList.add('expanded');
+            panel.style.height = '';
+            isExpanded = true;
+        } else {
+            panel.classList.remove('expanded');
+            panel.style.height = '';
+            isExpanded = false;
+        }
+    }
+
+    // Touch events - only on handle and panel (not on list)
+    handle.addEventListener('touchstart', onStart, { passive: true });
+    panel.addEventListener('touchstart', onStart, { passive: true });
+
+    document.addEventListener('touchmove', onMove, { passive: true });
+    document.addEventListener('touchend', onEnd);
+    document.addEventListener('touchcancel', onEnd);
+
+    // Mouse events (for desktop testing)
+    handle.addEventListener('mousedown', onStart);
+    panel.addEventListener('mousedown', onStart);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+
+    // Also allow clicking the handle to toggle
+    handle.addEventListener('click', (e) => {
+        if (!isDragging) {
+            panel.classList.toggle('expanded');
+            isExpanded = panel.classList.contains('expanded');
+        }
+    });
+
+    // Update state when expanded class changes externally
+    const observer = new MutationObserver(() => {
+        isExpanded = panel.classList.contains('expanded');
+    });
+    observer.observe(panel, { attributes: true, attributeFilter: ['class'] });
+
+    // Store expanded state for access by other functions
+    state.panelExpanded = () => isExpanded;
+    state.togglePanel = (forceState) => {
+        if (forceState !== undefined) {
+            isExpanded = forceState;
+        }
+        panel.classList.toggle('expanded', isExpanded);
+    };
 }
 
 // Initialize Event Listeners
 function initEventListeners() {
-    // Tab navigation
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-    });
+    // Bottom navigation
+    document.getElementById('locationBtn').addEventListener('click', handleLocationBtn);
+    document.getElementById('devicesBtn').addEventListener('click', handleDevicesBtn);
+    document.getElementById('settingsBtn').addEventListener('click', openSettingsModal);
+
+    // Panel swipe/drag functionality
+    initPanelDrag();
 
     // Settings modal
-    document.getElementById('settingsBtn').addEventListener('click', openSettingsModal);
     document.getElementById('closeSettingsBtn').addEventListener('click', closeSettingsModal);
     document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
     document.getElementById('testConnectionBtn').addEventListener('click', testEndpointConnection);
 
     // Accessory modal
-    document.getElementById('addAccessoryBtn').addEventListener('click', () => openAccessoryModal());
-    document.getElementById('fabBtn').addEventListener('click', () => openAccessoryModal());
     document.getElementById('closeAccessoryBtn').addEventListener('click', closeAccessoryModal);
     document.getElementById('cancelAccessoryBtn').addEventListener('click', closeAccessoryModal);
     document.getElementById('saveAccessoryBtn').addEventListener('click', saveAccessory);
@@ -472,7 +534,6 @@ function initEventListeners() {
     document.getElementById('importDeviceJsonBtn').addEventListener('click', () => {
         document.getElementById('deviceJsonInput').click();
     });
-
     document.getElementById('deviceJsonInput').addEventListener('change', importDeviceJson);
 
     // Color picker
@@ -485,29 +546,18 @@ function initEventListeners() {
         btn.addEventListener('click', () => selectIcon(btn.dataset.icon));
     });
 
+    // Device detail panel
+    document.getElementById('showPathBtn').addEventListener('click', showDevicePath);
+    document.getElementById('detailPanelHandle').addEventListener('click', closeDeviceDetail);
+
+    // Swipe-right gesture on device detail panel
+    initDetailPanelSwipe();
+
+    // Add device button
+    document.getElementById('addDeviceBtn').addEventListener('click', () => openAccessoryModal());
+
     // Refresh button
-    document.getElementById('refreshBtn').addEventListener('click', fetchLocations);
-
-    // Days filter change
-    document.getElementById('daysFilter').addEventListener('change', fetchLocations);
-
-    // Import/Export
-    document.getElementById('importBtn').addEventListener('click', () => {
-        document.getElementById('fileInput').click();
-    });
-
-    document.getElementById('fileInput').addEventListener('change', (e) => {
-        importAccessories(e.target.files[0]);
-    });
-
-    document.getElementById('exportBtn').addEventListener('click', exportAccessories);
-
-    // Dark mode toggle
-    document.getElementById('darkMode').addEventListener('change', (e) => {
-        state.settings.darkMode = e.target.checked;
-        applyDarkMode();
-        saveSettings();
-    });
+    document.getElementById('refreshBtn').addEventListener('click', handleRefresh);
 
     // Close modals on outside click
     document.querySelectorAll('.modal').forEach(modal => {
@@ -517,24 +567,312 @@ function initEventListeners() {
             }
         });
     });
+
+    // Dark mode toggle
+    document.getElementById('darkMode').addEventListener('change', (e) => {
+        state.settings.darkMode = e.target.checked;
+        applyDarkMode();
+        saveSettings();
+    });
 }
 
 // ============================================
-// TAB SWITCHING
+// NAVIGATION HANDLERS
 // ============================================
 
-function switchTab(tabName) {
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tab === tabName);
-    });
+function handleLocationBtn() {
+    // Update active state
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('nav-btn-active'));
+    document.getElementById('locationBtn').classList.add('nav-btn-active');
 
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.toggle('active', content.id === `${tabName}Tab`);
-    });
+    // Hide the devices panel and make nav pill-shaped
+    const panel = document.getElementById('bottomPanel');
+    const nav = document.querySelector('.bottom-nav');
+    panel.classList.add('hidden');
+    nav.classList.remove('panel-visible');
 
-    if (tabName === 'map') {
-        setTimeout(() => state.map.invalidateSize(), 100);
+    // Fit map to show all markers
+    if (state.markers.length > 0) {
+        const group = new L.featureGroup(state.markers);
+        state.map.fitBounds(group.getBounds().pad(0.2));
     }
+}
+
+function handleDevicesBtn() {
+    // Update active state
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('nav-btn-active'));
+    document.getElementById('devicesBtn').classList.add('nav-btn-active');
+
+    // Show the devices panel and connect nav to panel
+    const panel = document.getElementById('bottomPanel');
+    const nav = document.querySelector('.bottom-nav');
+    panel.classList.remove('hidden');
+    panel.classList.add('expanded');
+    nav.classList.add('panel-visible');
+
+    // Update the isExpanded state for drag functionality
+    if (panel._setExpanded) {
+        panel._setExpanded(true);
+    }
+
+    // Filter devices to show only those in current map frame
+    filterDevicesInFrame();
+}
+
+async function handleRefresh() {
+    const refreshBtn = document.getElementById('refreshBtn');
+    refreshBtn.classList.add('loading');
+    try {
+        await fetchLocations();
+    } finally {
+        setTimeout(() => {
+            refreshBtn.classList.remove('loading');
+        }, 500);
+    }
+}
+
+async function handleRefreshClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    console.log('Refresh clicked!');
+    const refreshBtn = document.getElementById('refreshBtn');
+    refreshBtn.classList.add('loading');
+    try {
+        await fetchLocations();
+    } catch (error) {
+        console.error('Refresh error:', error);
+        showToast('Refresh failed: ' + error.message, 'error');
+    } finally {
+        setTimeout(() => {
+            refreshBtn.classList.remove('loading');
+        }, 500);
+    }
+}
+
+function filterDevicesInFrame() {
+    const bounds = state.map.getBounds();
+    const devicesList = document.getElementById('devicesList');
+
+    if (state.accessories.length === 0) {
+        devicesList.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">🎒</div>
+                <div class="empty-state-text">No devices yet</div>
+                <div class="empty-state-subtext">Add your first device to start tracking</div>
+            </div>
+        `;
+        document.getElementById('devicesCount').textContent = '0';
+        return;
+    }
+
+    // Filter accessories that have locations in the current map bounds
+    const accessoriesInFrame = state.accessories.filter(accessory => {
+        const accessoryLocations = state.locations.filter(l => l.accessoryId === accessory.id);
+        return accessoryLocations.some(loc =>
+            bounds.contains([loc.lat, loc.lng])
+        );
+    });
+
+    // If no devices in frame, show all
+    const accessoriesToShow = accessoriesInFrame.length > 0 ? accessoriesInFrame : state.accessories;
+
+    document.getElementById('devicesCount').textContent = accessoriesToShow.length;
+
+    devicesList.innerHTML = accessoriesToShow.map(accessory => {
+        const latestLoc = state.locations
+            .filter(l => l.accessoryId === accessory.id)
+            .sort((a, b) => b.timestamp - a.timestamp)[0];
+
+        const statusText = latestLoc
+            ? `Last seen near ${formatTime(latestLoc.timestamp)}`
+            : 'No location data';
+
+        return `
+            <div class="device-item" onclick="selectDevice('${accessory.id}')">
+                <div class="device-item-icon" style="background: ${accessory.color}20; color: ${accessory.color}">
+                    ${iconMap[accessory.icon] || '🏷️'}
+                </div>
+                <div class="device-item-info">
+                    <div class="device-item-name">${accessory.name}</div>
+                    <div class="device-item-status">${statusText}</div>
+                </div>
+                <div class="device-item-arrow">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                    </svg>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function formatTime(timestamp) {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+// ============================================
+// DEVICE DETAIL PANEL
+// ============================================
+
+function selectDevice(accessoryId) {
+    const accessory = state.accessories.find(a => a.id === accessoryId);
+    if (!accessory) return;
+
+    state.selectedDeviceId = accessoryId;
+
+    // Update detail panel
+    const detailPanel = document.getElementById('deviceDetailPanel');
+    document.getElementById('detailDeviceIcon').innerHTML = `<span>${iconMap[accessory.icon] || '🏷️'}</span>`;
+    document.getElementById('detailDeviceIcon').style.background = accessory.color + '20';
+    document.getElementById('detailDeviceIcon').style.color = accessory.color;
+
+    document.getElementById('detailDeviceName').textContent = accessory.name;
+
+    const latestLoc = state.locations
+        .filter(l => l.accessoryId === accessoryId)
+        .sort((a, b) => b.timestamp - a.timestamp)[0];
+
+    if (latestLoc) {
+        document.getElementById('detailDeviceStatus').textContent =
+            `Last seen near ${formatTime(latestLoc.timestamp)}`;
+        state.map.setView([latestLoc.lat, latestLoc.lng], 15);
+    } else {
+        document.getElementById('detailDeviceStatus').textContent = 'No location data';
+    }
+
+    // Hide the devices panel
+    const panel = document.getElementById('bottomPanel');
+    const nav = document.querySelector('.bottom-nav');
+    panel.classList.add('hidden');
+    nav.classList.remove('panel-visible');
+
+    // Show detail panel
+    detailPanel.classList.add('active');
+}
+
+function closeDeviceDetail() {
+    document.getElementById('deviceDetailPanel').classList.remove('active');
+    state.selectedDeviceId = null;
+    clearPathLines();
+
+    // Restore the devices panel if devices button is active
+    const devicesBtn = document.getElementById('devicesBtn');
+    if (devicesBtn.classList.contains('nav-btn-active')) {
+        const panel = document.getElementById('bottomPanel');
+        const nav = document.querySelector('.bottom-nav');
+        panel.classList.remove('hidden');
+        panel.classList.add('expanded');
+        nav.classList.add('panel-visible');
+
+        // Update the isExpanded state for drag functionality
+        if (panel._setExpanded) {
+            panel._setExpanded(true);
+        }
+    }
+}
+
+// Swipe-down gesture to close device detail panel
+function initDetailPanelSwipe() {
+    const detailPanel = document.getElementById('deviceDetailPanel');
+    let startY = 0;
+    let currentY = 0;
+    let isDragging = false;
+    const swipeThreshold = 80; // Minimum distance to trigger swipe
+
+    function onStart(e) {
+        // Only start if the detail panel is active
+        if (!detailPanel.classList.contains('active')) return;
+
+        isDragging = true;
+        startY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+        detailPanel.style.transition = 'none';
+    }
+
+    function onMove(e) {
+        if (!isDragging) return;
+
+        currentY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+        const diff = currentY - startY;
+
+        // Only track swipes down (positive diff)
+        if (diff > 0) {
+            const opacity = 1 - (diff / (window.innerHeight * 0.5));
+            detailPanel.style.transform = `translateY(${diff}px)`;
+            detailPanel.style.opacity = opacity > 0 ? opacity : 0;
+        }
+    }
+
+    function onEnd(e) {
+        if (!isDragging) return;
+        isDragging = false;
+
+        const diff = currentY - startY;
+
+        // If swiped down far enough, close the panel immediately
+        if (diff > swipeThreshold) {
+            closeDeviceDetail();
+        } else {
+            // Reset with animation if not enough swipe
+            detailPanel.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+        }
+
+        // Reset transform and opacity
+        detailPanel.style.transform = '';
+        detailPanel.style.opacity = '';
+        detailPanel.style.transition = '';
+    }
+
+    // Touch events
+    detailPanel.addEventListener('touchstart', onStart, { passive: true });
+    document.addEventListener('touchmove', onMove, { passive: true });
+    document.addEventListener('touchend', onEnd);
+    document.addEventListener('touchcancel', onEnd);
+
+    // Mouse events (for desktop testing)
+    detailPanel.addEventListener('mousedown', onStart);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+}
+
+function showDevicePath() {
+    if (!state.selectedDeviceId) return;
+
+    const accessoryLocations = state.locations
+        .filter(l => l.accessoryId === state.selectedDeviceId)
+        .sort((a, b) => a.timestamp - b.timestamp);
+
+    if (accessoryLocations.length < 2) {
+        showToast('Need at least 2 location points to show path', 'warning');
+        return;
+    }
+
+    // Clear existing paths
+    clearPathLines();
+
+    // Create path line
+    const latLngs = accessoryLocations.map(loc => [loc.lat, loc.lng]);
+
+    const accessory = state.accessories.find(a => a.id === state.selectedDeviceId);
+
+    const polyline = L.polyline(latLngs, {
+        color: accessory?.color || '#3B82F6',
+        weight: 4,
+        opacity: 0.7,
+        className: 'location-path'
+    }).addTo(state.map);
+
+    state.pathPolylines.push(polyline);
+
+    // Fit map to show path
+    state.map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
+
+    showToast(`Showing ${accessoryLocations.length} location points`, 'success');
+}
+
+function clearPathLines() {
+    state.pathPolylines.forEach(line => state.map.removeLayer(line));
+    state.pathPolylines = [];
 }
 
 // ============================================
@@ -567,12 +905,6 @@ function saveSettings() {
     state.settings.fetchOnStartup = document.getElementById('fetchOnStartup').checked;
     state.settings.darkMode = document.getElementById('darkMode').checked;
 
-    // Validate endpoint URL
-    if (state.settings.endpointUrl && !state.settings.endpointUrl.match(/^https?:\/\/.+/)) {
-        showToast('Invalid endpoint URL. Must start with http:// or https://', 'error');
-        return;
-    }
-
     localStorage.setItem('haystackSettings', JSON.stringify(state.settings));
     closeSettingsModal();
     showToast('Settings saved', 'success');
@@ -594,7 +926,6 @@ function applyDarkMode() {
     }
 }
 
-// Test endpoint connection
 async function testEndpointConnection() {
     const url = document.getElementById('endpointUrl').value.trim();
     const testBtn = document.getElementById('testConnectionBtn');
@@ -608,10 +939,7 @@ async function testEndpointConnection() {
     testBtn.textContent = 'Testing...';
     testBtn.disabled = true;
 
-    console.log('[TEST] Checking endpoint:', url);
-
     try {
-        // First try a simple GET request to check if server is reachable
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -624,26 +952,18 @@ async function testEndpointConnection() {
 
         clearTimeout(timeoutId);
 
-        console.log('[TEST] Response status:', response.status);
-
         if (response.status === 404) {
-            showToast('Server reachable but endpoint not found. URL may need a path like /getLocationReports', 'warning');
+            showToast('Server reachable but endpoint not found', 'warning');
         } else if (response.status === 401) {
-            showToast('Server reachable! Authentication required (this is expected if you set a username/password)', 'success');
+            showToast('Server reachable! Authentication required', 'success');
         } else if (response.status === 200 || response.status === 400) {
-            // 400 is OK - means server is responding, just no valid data
             showToast('Connection successful!', 'success');
         } else {
-            const text = await response.text();
-            console.log('[TEST] Response:', text);
             showToast(`Server responded with status ${response.status}`, 'success');
         }
     } catch (error) {
-        console.error('[TEST] Connection error:', error);
         if (error.name === 'AbortError') {
-            showToast('Connection timed out. Server may be down or wrong address.', 'error');
-        } else if (error.message.includes('Failed to fetch')) {
-            showToast('Cannot reach server. Check URL and CORS settings.', 'error');
+            showToast('Connection timed out', 'error');
         } else {
             showToast(`Error: ${error.message}`, 'error');
         }
@@ -667,14 +987,12 @@ function loadAccessories() {
             state.accessories = [];
         }
     }
-    renderAccessoriesList();
-    renderAccessoriesGrid();
+    renderDevicesList();
 }
 
 function saveAccessories() {
     localStorage.setItem('haystackAccessories', JSON.stringify(state.accessories));
-    renderAccessoriesList();
-    renderAccessoriesGrid();
+    renderDevicesList();
 }
 
 function openAccessoryModal(accessoryId = null) {
@@ -718,8 +1036,6 @@ function selectColor(color) {
         if (isSelected) found = true;
     });
 
-    // If color is not in the predefined list, select the first button visually
-    // but keep the custom color in state
     if (!found) {
         document.querySelector('.color-btn')?.classList.add('selected');
     }
@@ -765,6 +1081,7 @@ function saveAccessory() {
     saveAccessories();
     closeAccessoryModal();
     showToast('Accessory saved', 'success');
+    fetchLocations(); // Auto-fetch after adding
 }
 
 function deleteAccessory(id) {
@@ -775,91 +1092,49 @@ function deleteAccessory(id) {
     }
 }
 
-function renderAccessoriesList() {
-    const container = document.getElementById('accessoriesList');
+function renderDevicesList() {
+    const devicesList = document.getElementById('devicesList');
 
     if (state.accessories.length === 0) {
-        container.innerHTML = `
+        devicesList.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">📍</div>
-                <div class="empty-state-text">No accessories yet</div>
-                <div class="empty-state-subtext">Add your first accessory to start tracking</div>
-            </div>
-        `;
-        return;
-    }
-
-    container.innerHTML = state.accessories.map(accessory => `
-        <div class="accessory-item" onclick="focusOnAccessory('${accessory.id}')">
-            <div class="accessory-header">
-                <div class="accessory-icon" style="background: ${accessory.color}20; color: ${accessory.color}">
-                    ${iconMap[accessory.icon] || '🏷️'}
-                </div>
-                <div class="accessory-info">
-                    <div class="accessory-name">${accessory.name}</div>
-                    <div class="accessory-meta">${accessory.deviceId}</div>
-                </div>
-                <div class="accessory-status ${accessory.active ? 'active' : 'inactive'}"></div>
-            </div>
-        </div>
-    `).join('');
-}
-
-function renderAccessoriesGrid() {
-    const container = document.getElementById('accessoriesGrid');
-
-    if (state.accessories.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state" style="grid-column: 1 / -1;">
                 <div class="empty-state-icon">🎒</div>
-                <div class="empty-state-text">No accessories yet</div>
-                <div class="empty-state-subtext">Add your first accessory to start tracking</div>
+                <div class="empty-state-text">No devices yet</div>
+                <div class="empty-state-subtext">Tap + to add your first device</div>
             </div>
         `;
+        document.getElementById('devicesCount').textContent = '0';
         return;
     }
 
-    container.innerHTML = state.accessories.map(accessory => `
-        <div class="accessory-card">
-            <div class="accessory-card-header">
-                <div class="accessory-card-icon" style="background: ${accessory.color}20; color: ${accessory.color}">
+    document.getElementById('devicesCount').textContent = state.accessories.length;
+
+    devicesList.innerHTML = state.accessories.map(accessory => {
+        const latestLoc = state.locations
+            .filter(l => l.accessoryId === accessory.id)
+            .sort((a, b) => b.timestamp - a.timestamp)[0];
+
+        const statusText = latestLoc
+            ? `Last seen near ${formatTime(latestLoc.timestamp)}`
+            : 'No location data';
+
+        return `
+            <div class="device-item" onclick="selectDevice('${accessory.id}')">
+                <div class="device-item-icon" style="background: ${accessory.color}20; color: ${accessory.color}">
                     ${iconMap[accessory.icon] || '🏷️'}
                 </div>
-                <div class="accessory-info">
-                    <div class="accessory-name">${accessory.name}</div>
-                    <div class="accessory-meta">${accessory.deviceId}</div>
-                    <div class="accessory-meta">
-                        Status: <span style="color: ${accessory.active ? 'var(--success)' : 'var(--secondary)'}">${accessory.active ? 'Active' : 'Inactive'}</span>
-                    </div>
+                <div class="device-item-info">
+                    <div class="device-item-name">${accessory.name}</div>
+                    <div class="device-item-status">${statusText}</div>
+                </div>
+                <div class="device-item-arrow">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                    </svg>
                 </div>
             </div>
-            <div class="accessory-card-actions">
-                <button class="secondary-btn" onclick="openAccessoryModal('${accessory.id}')">Edit</button>
-                <button class="secondary-btn" onclick="deleteAccessory('${accessory.id}')" style="background: var(--danger)">Delete</button>
-                <button class="secondary-btn" onclick="toggleActive('${accessory.id}')">${accessory.active ? 'Deactivate' : 'Activate'}</button>
-            </div>
-        </div>
-    `).join('');
-}
-
-function toggleActive(id) {
-    const accessory = state.accessories.find(a => a.id === id);
-    if (accessory) {
-        accessory.active = !accessory.active;
-        saveAccessories();
-        showToast(`Accessory ${accessory.active ? 'activated' : 'deactivated'}`, 'success');
-    }
-}
-
-function focusOnAccessory(id) {
-    const accessory = state.accessories.find(a => a.id === id);
-    if (accessory && state.locations.length > 0) {
-        const accessoryLocations = state.locations.filter(l => l.accessoryId === id);
-        if (accessoryLocations.length > 0) {
-            const latest = accessoryLocations[accessoryLocations.length - 1];
-            state.map.setView([latest.lat, latest.lng], 15);
-        }
-    }
+        `;
+    }).join('');
 }
 
 // ============================================
@@ -867,36 +1142,22 @@ function focusOnAccessory(id) {
 // ============================================
 
 async function fetchLocations() {
-    const refreshBtn = document.getElementById('refreshBtn');
-    const days = parseInt(document.getElementById('daysFilter').value);
+    const days = state.settings.daysToFetch;
     const activeAccessories = state.accessories.filter(a => a.active);
 
-    console.log('[DEBUG] Active accessories:', activeAccessories.map(a => ({ name: a.name, deviceId: a.deviceId })));
-
     if (activeAccessories.length === 0) {
-        showToast('No active accessories to fetch', 'warning');
+        showToast('No active devices to fetch', 'warning');
         return;
     }
-
-    refreshBtn.classList.add('loading');
-    refreshBtn.disabled = true;
 
     try {
         const allLocations = [];
 
-        // Fetch locations for each device separately
         for (const accessory of activeAccessories) {
-            console.log(`[DEBUG] Fetching for ${accessory.name}...`);
-
             try {
-                // Generate hashed key for this accessory
                 const hashedKey = await getHashedAdvertisementKey(accessory.privateKey);
-                console.log(`[DEBUG] ${accessory.name} (${accessory.deviceId}) -> hashedKey: ${hashedKey}`);
-
-                // Fetch reports for this device only
                 const reports = await fetchLocationReportsFromEndpoint([hashedKey], days);
 
-                // Decrypt reports for this device
                 for (const report of reports) {
                     try {
                         const decrypted = await decryptReport(report, accessory.privateKey);
@@ -914,42 +1175,34 @@ async function fetchLocations() {
                         console.error(`Failed to decrypt report for ${accessory.name}:`, decryptError);
                     }
                 }
-
-                console.log(`[DEBUG] ${accessory.name}: got ${reports.length} report(s)`);
             } catch (deviceError) {
                 console.error(`Failed to fetch for ${accessory.name}:`, deviceError);
             }
         }
 
-        // Sort by timestamp
         allLocations.sort((a, b) => a.timestamp - b.timestamp);
 
         state.locations = allLocations;
         updateMapMarkers();
-        showToast(`Fetched ${allLocations.length} location(s) from ${activeAccessories.length} device(s)`, 'success');
+        renderDevicesList();
+        showToast(`Fetched ${allLocations.length} location(s)`, 'success');
 
-        if (allLocations.length === 0) {
-            showToast('No locations found. Check your endpoint connection and keys.', 'warning');
+        if (allLocations.length > 0) {
+            const group = new L.featureGroup(state.markers);
+            state.map.fitBounds(group.getBounds().pad(0.1));
         }
     } catch (error) {
         console.error('Error fetching locations:', error);
         showToast(`Failed to fetch: ${error.message}`, 'error');
-    } finally {
-        refreshBtn.classList.remove('loading');
-        refreshBtn.disabled = false;
     }
 }
 
 function updateMapMarkers() {
-    // Clear existing markers
     state.markers.forEach(marker => state.map.removeLayer(marker));
     state.markers = [];
 
-    if (state.locations.length === 0) {
-        return;
-    }
+    if (state.locations.length === 0) return;
 
-    // Group locations by accessory
     const locationsByAccessory = {};
     state.locations.forEach(loc => {
         if (!locationsByAccessory[loc.accessoryId]) {
@@ -958,19 +1211,17 @@ function updateMapMarkers() {
         locationsByAccessory[loc.accessoryId].push(loc);
     });
 
-    // Add markers for each accessory
     Object.entries(locationsByAccessory).forEach(([accessoryId, locations]) => {
         const accessory = state.accessories.find(a => a.id === accessoryId);
         if (!accessory) return;
 
         const latest = locations[locations.length - 1];
 
-        // Create custom icon
         const icon = L.divIcon({
             className: 'custom-marker',
-            html: `<div style="background: ${accessory.color}; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${iconMap[accessory.icon] || '🏷️'}</div>`,
-            iconSize: [32, 32],
-            iconAnchor: [16, 16]
+            html: `<div style="background: ${accessory.color}; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 18px;">${iconMap[accessory.icon] || '🏷️'}</div>`,
+            iconSize: [36, 36],
+            iconAnchor: [18, 18]
         });
 
         const popupContent = `
@@ -978,34 +1229,25 @@ function updateMapMarkers() {
                 <div class="custom-popup-icon">${iconMap[accessory.icon] || '🏷️'}</div>
                 <div class="custom-popup-name">${accessory.name}</div>
                 <div class="custom-popup-time">${new Date(latest.timestamp).toLocaleString()}</div>
-                <div style="font-size: 0.75rem; margin-top: 0.25rem;">Accuracy: ±${latest.accuracy}m</div>
-                ${latest.batteryStatus ? `<div style="font-size: 0.75rem;">Battery: ${latest.batteryStatus}</div>` : ''}
+                <div style="font-size: 12px; margin-top: 4px;">Accuracy: ±${latest.accuracy}m</div>
+                ${latest.batteryStatus ? `<div style="font-size: 12px;">Battery: ${latest.batteryStatus}</div>` : ''}
             </div>
         `;
 
         const marker = L.marker([latest.lat, latest.lng], { icon })
             .addTo(state.map)
-            .bindPopup(popupContent);
+            .on('click', () => selectDevice(accessoryId));
 
         state.markers.push(marker);
     });
-
-    // Fit map to show all markers
-    if (state.markers.length > 0) {
-        const group = new L.featureGroup(state.markers);
-        state.map.fitBounds(group.getBounds().pad(0.1));
-    }
 }
 
 // ============================================
 // IMPORT/EXPORT
 // ============================================
 
-// Convert colorComponents [r, g, b, a] to hex color
 function colorComponentsToHex(components) {
-    // Handle both 0-1 range and 0-255 range
     const toHex = (val) => {
-        // If value is between 0-1, convert to 0-255
         const num = val <= 1 ? Math.round(val * 255) : Math.round(val);
         return num.toString(16).padStart(2, '0');
     };
@@ -1016,10 +1258,9 @@ function colorComponentsToHex(components) {
         const b = toHex(components[2]);
         return `#${r}${g}${b}`.toUpperCase();
     }
-    return '#3B82F6'; // Default blue
+    return '#3B82F6';
 }
 
-// Convert device id to hex string
 function deviceIdToHex(id) {
     if (typeof id === 'number') {
         return id.toString(16).toUpperCase().padStart(8, '0');
@@ -1027,7 +1268,6 @@ function deviceIdToHex(id) {
     return id.toString();
 }
 
-// Import device.json file and auto-fill the form
 function importDeviceJson(event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -1036,8 +1276,6 @@ function importDeviceJson(event) {
     reader.onload = (e) => {
         try {
             const data = JSON.parse(e.target.result);
-
-            // Handle both array and single object
             const devices = Array.isArray(data) ? data : [data];
 
             if (devices.length === 0) {
@@ -1045,42 +1283,27 @@ function importDeviceJson(event) {
                 return;
             }
 
-            // Use the first device to populate the form
             const device = devices[0];
 
-            // Fill in the form fields
             document.getElementById('accessoryName').value = device.name || '';
             document.getElementById('accessoryId').value = deviceIdToHex(device.id);
             document.getElementById('accessoryKey').value = device.privateKey || '';
 
-            // Set color from colorComponents
             const hexColor = colorComponentsToHex(device.colorComponents);
             selectColor(hexColor);
 
-            // Set icon - map from device.json icon or use default
             const iconMapping = {
-                '': 'tag',
-                'tag': 'tag',
-                'key': 'key',
-                'bag': 'bag',
-                'backpack': 'bag',
-                'bike': 'bike',
-                'bicycle': 'bike',
-                'car': 'car',
-                'vehicle': 'car',
-                'pet': 'pet',
-                'dog': 'pet',
-                'cat': 'pet'
+                '': 'tag', 'tag': 'tag', 'key': 'key', 'bag': 'bag',
+                'backpack': 'bag', 'bike': 'bike', 'bicycle': 'bike',
+                'car': 'car', 'vehicle': 'car', 'pet': 'pet', 'dog': 'pet', 'cat': 'pet'
             };
             const icon = iconMapping[device.icon] || 'tag';
             selectIcon(icon);
 
-            // Store isActive status for when saving
             state.importedIsActive = device.isActive !== undefined ? device.isActive : true;
 
             showToast(`Loaded "${device.name}" from device.json`, 'success');
 
-            // If there are multiple devices, offer to import all
             if (devices.length > 1) {
                 setTimeout(() => {
                     if (confirm(`This file contains ${devices.length} devices. Import all of them?`)) {
@@ -1094,12 +1317,9 @@ function importDeviceJson(event) {
         }
     };
     reader.readAsText(file);
-
-    // Reset file input so the same file can be selected again
     event.target.value = '';
 }
 
-// Import all devices from device.json array
 async function importAllDevices(devices) {
     let imported = 0;
 
@@ -1111,7 +1331,7 @@ async function importAllDevices(devices) {
                 deviceId: deviceIdToHex(device.id),
                 privateKey: device.privateKey || '',
                 color: colorComponentsToHex(device.colorComponents),
-                icon: 'tag', // Default icon for bulk import
+                icon: 'tag',
                 active: device.isActive !== undefined ? device.isActive : true,
                 createdAt: new Date().toISOString()
             };
@@ -1128,58 +1348,6 @@ async function importAllDevices(devices) {
     closeAccessoryModal();
 }
 
-function exportAccessories() {
-    const exportData = state.accessories.map(a => ({
-        name: a.name,
-        deviceId: a.deviceId,
-        privateKey: a.privateKey,
-        color: a.color,
-        icon: a.icon,
-        active: a.active
-    }));
-
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `accessories_${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    showToast('Accessories exported', 'success');
-}
-
-function importAccessories(file) {
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const imported = JSON.parse(e.target.result);
-
-            imported.forEach(item => {
-                state.accessories.push({
-                    id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-                    name: item.name,
-                    deviceId: item.deviceId,
-                    privateKey: item.privateKey,
-                    color: item.color || '#3B82F6',
-                    icon: item.icon || 'tag',
-                    active: item.active !== undefined ? item.active : true,
-                    createdAt: new Date().toISOString()
-                });
-            });
-
-            saveAccessories();
-            showToast(`Imported ${imported.length} accessory/ies`, 'success');
-        } catch (error) {
-            console.error('Import error:', error);
-            showToast('Failed to import accessories', 'error');
-        }
-    };
-    reader.readAsText(file);
-}
-
 // ============================================
 // TOAST NOTIFICATION
 // ============================================
@@ -1193,3 +1361,10 @@ function showToast(message, type = 'info') {
         toast.classList.remove('show');
     }, 3000);
 }
+
+// Expose functions globally for onclick handlers
+window.selectDevice = selectDevice;
+window.deleteAccessory = deleteAccessory;
+window.openAccessoryModal = openAccessoryModal;
+window.fetchLocations = fetchLocations;
+window.handleRefreshClick = handleRefreshClick;
