@@ -21,11 +21,10 @@ const state = {
     pathPolylines: [],
     currentAccessoryId: null,
     selectedColor: '#3B82F6',
-    selectedIcon: 'tag',
     selectedDeviceId: null
 };
 
-// Icon mapping
+// Icon mapping (for backward compatibility with old devices)
 const iconMap = {
     tag: '🏷️',
     key: '🔑',
@@ -34,6 +33,16 @@ const iconMap = {
     car: '🚗',
     pet: '🐕'
 };
+
+// Helper function to get display icon (handles both old icon names and new emojis)
+function getDisplayIcon(accessory) {
+    // If icon is an emoji (contains non-ASCII characters or is longer than 4 chars), use it directly
+    if (accessory.icon && [...accessory.icon].length <= 4) {
+        return accessory.icon;
+    }
+    // Otherwise use iconMap for backward compatibility
+    return getDisplayIcon(accessory);
+}
 
 // ============================================
 // UTILITY FUNCTIONS
@@ -541,9 +550,22 @@ function initEventListeners() {
         btn.addEventListener('click', () => selectColor(btn.dataset.color));
     });
 
-    // Icon picker
-    document.querySelectorAll('.icon-btn').forEach(btn => {
-        btn.addEventListener('click', () => selectIcon(btn.dataset.icon));
+    // Color slider and hex input
+    const colorSlider = document.getElementById('colorSlider');
+    const colorHexInput = document.getElementById('accessoryColor');
+
+    colorSlider.addEventListener('input', (e) => {
+        selectColor(e.target.value);
+    });
+
+    colorHexInput.addEventListener('input', (e) => {
+        let hex = e.target.value;
+        if (!hex.startsWith('#')) {
+            hex = '#' + hex;
+        }
+        if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+            selectColor(hex);
+        }
     });
 
     // Device detail panel
@@ -709,14 +731,12 @@ function filterDevicesInFrame() {
             .filter(l => l.accessoryId === accessory.id)
             .sort((a, b) => b.timestamp - a.timestamp)[0];
 
-        const statusText = latestLoc
-            ? `Last seen near ${formatTime(latestLoc.timestamp)}`
-            : 'No location data';
+        const statusText = formatLocationStatus(latestLoc);
 
         return `
             <div class="device-item" onclick="selectDevice('${accessory.id}')">
                 <div class="device-item-icon" style="background: ${accessory.color}20; color: ${accessory.color}">
-                    ${iconMap[accessory.icon] || '🏷️'}
+                    ${getDisplayIcon(accessory)}
                 </div>
                 <div class="device-item-info">
                     <div class="device-item-name">${accessory.name}</div>
@@ -737,6 +757,48 @@ function formatTime(timestamp) {
     return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+function formatLocationStatus(loc) {
+    if (!loc) return 'No location data';
+    const date = new Date(loc.timestamp);
+    const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const lat = loc.lat.toFixed(6);
+    const lng = loc.lng.toFixed(6);
+    const ageStr = formatTimeAgo(loc.timestamp);
+    return `${lat}, ${lng} · ${dateStr} ${timeStr} · ${ageStr}`;
+}
+
+function formatTimeAgo(timestamp) {
+    const now = Date.now();
+    const diff = now - timestamp;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return 'just now';
+    if (hours < 1) return `${minutes} min${minutes !== 1 ? 's' : ''} ago`;
+
+    // Show hours and remaining minutes for hours less than 24
+    if (hours < 24) {
+        const remainingMins = minutes % 60;
+        if (remainingMins > 0) {
+            const hrStr = hours === 1 ? 'hr' : 'hrs';
+            const minStr = remainingMins === 1 ? 'min' : 'mins';
+            return `${hours} ${hrStr} ${remainingMins} ${minStr} ago`;
+        }
+        return `${hours} hr${hours !== 1 ? 's' : ''} ago`;
+    }
+
+    // For days, optionally show hours
+    const remainingHours = hours % 24;
+    if (remainingHours > 0) {
+        const dayStr = days === 1 ? 'day' : 'days';
+        const hrStr = remainingHours === 1 ? 'hr' : 'hrs';
+        return `${days} ${dayStr} ${remainingHours} ${hrStr} ago`;
+    }
+    return `${days} day${days !== 1 ? 's' : ''} ago`;
+}
+
 // ============================================
 // DEVICE DETAIL PANEL
 // ============================================
@@ -747,35 +809,23 @@ function selectDevice(accessoryId) {
 
     state.selectedDeviceId = accessoryId;
 
-    // Update detail panel
-    const detailPanel = document.getElementById('deviceDetailPanel');
-    document.getElementById('detailDeviceIcon').innerHTML = `<span>${iconMap[accessory.icon] || '🏷️'}</span>`;
-    document.getElementById('detailDeviceIcon').style.background = accessory.color + '20';
-    document.getElementById('detailDeviceIcon').style.color = accessory.color;
-
-    document.getElementById('detailDeviceName').textContent = accessory.name;
-
     const latestLoc = state.locations
         .filter(l => l.accessoryId === accessoryId)
         .sort((a, b) => b.timestamp - a.timestamp)[0];
 
     if (latestLoc) {
-        document.getElementById('detailDeviceStatus').textContent =
-            `Last seen near ${formatTime(latestLoc.timestamp)}`;
         state.map.setView([latestLoc.lat, latestLoc.lng], 15);
-    } else {
-        document.getElementById('detailDeviceStatus').textContent = 'No location data';
     }
 
-    // Hide the devices panel
+    // Hide the devices panel and make nav pill-shaped
     const panel = document.getElementById('bottomPanel');
     const nav = document.querySelector('.bottom-nav');
     panel.classList.add('hidden');
     nav.classList.remove('panel-visible');
-    nav.classList.add('detail-visible');
+    nav.classList.remove('detail-visible');
 
-    // Show detail panel
-    detailPanel.classList.add('active');
+    // Hide detail panel if it's open
+    document.getElementById('deviceDetailPanel').classList.remove('active');
 }
 
 function closeDeviceDetail() {
@@ -871,37 +921,103 @@ function showDevicePath() {
         .filter(l => l.accessoryId === state.selectedDeviceId)
         .sort((a, b) => a.timestamp - b.timestamp);
 
-    if (accessoryLocations.length < 2) {
-        showToast('Need at least 2 location points to show path', 'warning');
+    if (accessoryLocations.length < 1) {
+        showToast('No location points to show', 'warning');
         return;
     }
 
-    // Clear existing paths
+    // Clear existing paths and markers
     clearPathLines();
 
-    // Create path line
-    const latLngs = accessoryLocations.map(loc => [loc.lat, loc.lng]);
+    // Hide other device markers
+    state.markers.forEach(marker => {
+        const deviceId = marker.getDeviceId?.();
+        if (deviceId !== state.selectedDeviceId) {
+            state.map.removeLayer(marker);
+        }
+    });
 
     const accessory = state.accessories.find(a => a.id === state.selectedDeviceId);
+    const totalPoints = accessoryLocations.length;
 
-    const polyline = L.polyline(latLngs, {
-        color: accessory?.color || '#3B82F6',
-        weight: 4,
-        opacity: 0.7,
-        className: 'location-path'
-    }).addTo(state.map);
+    // Helper to interpolate color from red (oldest) to green (newest)
+    function getColorForIndex(index) {
+        // Red = RGB(255, 0, 0), Green = RGB(0, 200, 0)
+        const ratio = index / (totalPoints - 1 || 1);
+        const r = Math.round(255 * (1 - ratio));
+        const g = Math.round(200 * ratio);
+        return `rgb(${r}, ${g}, 0)`;
+    }
 
-    state.pathPolylines.push(polyline);
+    // Add location dots and create line segments
+    for (let i = 0; i < totalPoints; i++) {
+        const loc = accessoryLocations[i];
+        const color = getColorForIndex(i);
 
-    // Fit map to show path
-    state.map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
+        const date = new Date(loc.timestamp);
+        const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const ageStr = formatTimeAgo(loc.timestamp);
 
-    showToast(`Showing ${accessoryLocations.length} location points`, 'success');
+        // Create popup content
+        const popupContent = `
+            <div class="location-popup">
+                <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">${dateStr} ${timeStr}</div>
+                <div style="font-size: 12px; opacity: 0.8;">${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}</div>
+                <div style="font-size: 11px; opacity: 0.6; margin-top: 2px;">${ageStr}</div>
+                <div style="font-size: 11px; opacity: 0.6;">Accuracy: ±${loc.accuracy}m</div>
+            </div>
+        `;
+
+        // Add circle marker for each location
+        const circle = L.circleMarker([loc.lat, loc.lng], {
+            radius: 12,
+            fillColor: color,
+            color: '#fff',
+            weight: 2,
+            opacity: 1,
+            fillOpacity: 1
+        }).bindPopup(popupContent).addTo(state.map);
+
+        state.pathPolylines.push(circle);
+
+        // Create line segment to next point
+        if (i < totalPoints - 1) {
+            const nextLoc = accessoryLocations[i + 1];
+            // Use average color for the segment
+            const segmentColor = getColorForIndex(i + 0.5);
+
+            const line = L.polyline([[loc.lat, loc.lng], [nextLoc.lat, nextLoc.lng]], {
+                color: segmentColor,
+                weight: 4,
+                opacity: 0.8,
+                className: 'location-path'
+            }).addTo(state.map);
+
+            state.pathPolylines.push(line);
+        }
+    }
+
+    // Fit map to show all points
+    if (totalPoints > 0) {
+        const group = new L.featureGroup(state.pathPolylines);
+        state.map.fitBounds(group.getBounds().pad(0.2));
+    }
+
+    showToast(`Showing ${totalPoints} location point${totalPoints > 1 ? 's' : ''}`, 'success');
 }
 
 function clearPathLines() {
+    // Remove path lines and dots
     state.pathPolylines.forEach(line => state.map.removeLayer(line));
     state.pathPolylines = [];
+
+    // Restore all device markers
+    state.markers.forEach(marker => {
+        if (!state.map.hasLayer(marker)) {
+            marker.addTo(state.map);
+        }
+    });
 }
 
 // ============================================
@@ -1053,7 +1169,6 @@ function saveAccessories() {
 function openAccessoryModal(accessoryId = null) {
     state.currentAccessoryId = accessoryId;
     state.selectedColor = '#3B82F6';
-    state.selectedIcon = 'tag';
 
     if (accessoryId) {
         const accessory = state.accessories.find(a => a.id === accessoryId);
@@ -1063,17 +1178,19 @@ function openAccessoryModal(accessoryId = null) {
             document.getElementById('accessoryId').value = accessory.deviceId;
             document.getElementById('accessoryKey').value = accessory.privateKey;
             state.selectedColor = accessory.color;
-            state.selectedIcon = accessory.icon;
+            // Set icon input - if it's an old icon name, convert it to emoji
+            const iconEmoji = iconMap[accessory.icon] || accessory.icon || '🏷️';
+            document.getElementById('accessoryIcon').value = iconEmoji;
         }
     } else {
         document.getElementById('accessoryModalTitle').textContent = 'Add Accessory';
         document.getElementById('accessoryName').value = '';
         document.getElementById('accessoryId').value = '';
         document.getElementById('accessoryKey').value = '';
+        document.getElementById('accessoryIcon').value = '';
     }
 
     selectColor(state.selectedColor);
-    selectIcon(state.selectedIcon);
     document.getElementById('accessoryModal').classList.add('active');
 }
 
@@ -1084,6 +1201,8 @@ function closeAccessoryModal() {
 
 function selectColor(color) {
     state.selectedColor = color;
+
+    // Update color buttons
     let found = false;
     document.querySelectorAll('.color-btn').forEach(btn => {
         const isSelected = btn.dataset.color === color;
@@ -1094,19 +1213,18 @@ function selectColor(color) {
     if (!found) {
         document.querySelector('.color-btn')?.classList.add('selected');
     }
-}
 
-function selectIcon(icon) {
-    state.selectedIcon = icon;
-    document.querySelectorAll('.icon-btn').forEach(btn => {
-        btn.classList.toggle('selected', btn.dataset.icon === icon);
-    });
+    // Update hex input and color slider
+    document.getElementById('accessoryColor').value = color.toUpperCase();
+    document.getElementById('colorSlider').value = color;
 }
 
 function saveAccessory() {
     const name = document.getElementById('accessoryName').value.trim();
     const deviceId = document.getElementById('accessoryId').value.trim();
     const privateKey = document.getElementById('accessoryKey').value.trim();
+    const iconEmoji = document.getElementById('accessoryIcon').value.trim() || '🏷️';
+    const colorHex = document.getElementById('accessoryColor').value.trim() || '#3B82F6';
 
     if (!name || !deviceId || !privateKey) {
         showToast('Please fill in all fields', 'error');
@@ -1118,8 +1236,8 @@ function saveAccessory() {
         name,
         deviceId,
         privateKey,
-        color: state.selectedColor,
-        icon: state.selectedIcon,
+        color: colorHex,
+        icon: iconEmoji,
         active: true,
         createdAt: new Date().toISOString()
     };
@@ -1164,32 +1282,236 @@ function renderDevicesList() {
 
     document.getElementById('devicesCount').textContent = state.accessories.length;
 
-    devicesList.innerHTML = state.accessories.map(accessory => {
+    // Sort accessories by latest location timestamp (most recent first)
+    const sortedAccessories = [...state.accessories].sort((a, b) => {
+        const aLatest = state.locations
+            .filter(l => l.accessoryId === a.id)
+            .sort((x, y) => y.timestamp - x.timestamp)[0];
+        const bLatest = state.locations
+            .filter(l => l.accessoryId === b.id)
+            .sort((x, y) => y.timestamp - x.timestamp)[0];
+
+        const aTime = aLatest?.timestamp || 0;
+        const bTime = bLatest?.timestamp || 0;
+        return bTime - aTime;
+    });
+
+    devicesList.innerHTML = sortedAccessories.map(accessory => {
         const latestLoc = state.locations
             .filter(l => l.accessoryId === accessory.id)
             .sort((a, b) => b.timestamp - a.timestamp)[0];
 
-        const statusText = latestLoc
-            ? `Last seen near ${formatTime(latestLoc.timestamp)}`
-            : 'No location data';
+        const statusText = formatLocationStatus(latestLoc);
 
         return `
-            <div class="device-item" onclick="selectDevice('${accessory.id}')">
-                <div class="device-item-icon" style="background: ${accessory.color}20; color: ${accessory.color}">
-                    ${iconMap[accessory.icon] || '🏷️'}
+            <div class="device-item-wrapper" data-device-id="${accessory.id}">
+                <div class="device-item" onclick="selectDevice('${accessory.id}')">
+                    <div class="device-item-icon" style="background: ${accessory.color}20; color: ${accessory.color}">
+                        ${getDisplayIcon(accessory)}
+                    </div>
+                    <div class="device-item-info">
+                        <div class="device-item-name">${accessory.name}</div>
+                        <div class="device-item-status">${statusText}</div>
+                    </div>
+                    <div class="device-item-arrow">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="9 18 15 12 9 6"></polyline>
+                        </svg>
+                    </div>
                 </div>
-                <div class="device-item-info">
-                    <div class="device-item-name">${accessory.name}</div>
-                    <div class="device-item-status">${statusText}</div>
-                </div>
-                <div class="device-item-arrow">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="9 18 15 12 9 6"></polyline>
-                    </svg>
+                <div class="device-item-actions">
+                    <div class="device-item-navigate" onclick="navigateToDevice('${accessory.id}')">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="3 11 22 2 13 21 11 22 22 11 3"></polygon>
+                            <circle cx="12" cy="11" r="3"></circle>
+                        </svg>
+                        Navigate
+                    </div>
+                    <div class="device-item-history" onclick="showDeviceHistory('${accessory.id}')">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                        History
+                    </div>
+                    <div class="device-item-delete" onclick="deleteAccessory('${accessory.id}')">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                        Delete
+                    </div>
                 </div>
             </div>
         `;
     }).join('');
+
+    // Initialize swipe gestures for device items
+    initDeviceSwipeGestures();
+}
+
+// Initialize swipe-to-delete gestures on device items
+function initDeviceSwipeGestures() {
+    const wrappers = document.querySelectorAll('.device-item-wrapper');
+
+    wrappers.forEach(wrapper => {
+        const deviceItem = wrapper.querySelector('.device-item');
+        const actionsPanel = wrapper.querySelector('.device-item-actions');
+        const deviceId = wrapper.getAttribute('data-device-id');
+
+        let startX = 0;
+        let startTime = 0;
+        let hasMoved = false;
+        let isGestureActive = false;
+        let longPressTimer = null;
+        const swipeThreshold = 200; // Need to swipe 200px to reveal buttons
+        const tapThreshold = 10; // Movement less than this is considered a tap
+        const longPressDuration = 500; // 500ms for long press
+
+        function onStart(e) {
+            // Don't start if clicking action buttons
+            if (e.target.closest('.device-item-actions')) {
+                isGestureActive = false;
+                return;
+            }
+
+            isGestureActive = true;
+            hasMoved = false;
+            startX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            startTime = Date.now();
+            deviceItem.style.transition = 'none';
+            actionsPanel.style.transition = 'none';
+
+            // Start long press timer
+            longPressTimer = setTimeout(() => {
+                if (!hasMoved) {
+                    // Long press detected - open edit modal
+                    openAccessoryModal(deviceId);
+                    // Visual feedback - vibrate on mobile
+                    if (navigator.vibrate) {
+                        navigator.vibrate(50);
+                    }
+                }
+            }, longPressDuration);
+        }
+
+        function onMove(e) {
+            // Only handle move if we started a gesture (not clicking action buttons)
+            if (!isGestureActive) return;
+
+            const currentX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            const diff = currentX - startX;
+
+            // Check if moved past tap threshold
+            if (Math.abs(diff) > tapThreshold) {
+                hasMoved = true;
+                // Cancel long press if moved
+                if (longPressTimer) {
+                    clearTimeout(longPressTimer);
+                    longPressTimer = null;
+                }
+            }
+
+            // Only track swipes to the left (negative diff) and past tap threshold
+            if (diff < -tapThreshold) {
+                // Prevent default scrolling when handling horizontal swipe gesture
+                e.preventDefault();
+                // Limit the swipe to 240px max
+                const limitedDiff = Math.max(diff, -240);
+                deviceItem.style.transform = `translateX(${limitedDiff}px)`;
+                actionsPanel.style.right = `${-240 + Math.abs(limitedDiff)}px`;
+            }
+        }
+
+        function onEnd(e) {
+            // Cancel long press timer
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+
+            // Reset gesture active flag
+            isGestureActive = false;
+
+            // If it was just a tap (no significant movement), don't do anything - let the click handler work
+            if (!hasMoved) {
+                deviceItem.style.transform = '';
+                return;
+            }
+
+            const currentX = e.type.includes('mouse') ? e.clientX : e.changedTouches?.[0]?.clientX || startX;
+            const diff = currentX - startX;
+
+            // If swiped left far enough, reveal action buttons
+            if (diff < -swipeThreshold) {
+                wrapper.classList.add('delete-visible');
+            } else {
+                // Reset
+                deviceItem.style.transition = 'transform 0.3s ease';
+                actionsPanel.style.transition = 'right 0.3s ease';
+                deviceItem.style.transform = '';
+                actionsPanel.style.right = '';
+                wrapper.classList.remove('delete-visible');
+            }
+        }
+
+        // Touch events
+        wrapper.addEventListener('touchstart', onStart, { passive: true });
+        wrapper.addEventListener('touchmove', onMove, { passive: false });
+        wrapper.addEventListener('touchend', onEnd);
+        wrapper.addEventListener('touchcancel', onEnd);
+
+        // Mouse events (for desktop testing)
+        wrapper.addEventListener('mousedown', onStart);
+        wrapper.addEventListener('mousemove', onMove);
+        wrapper.addEventListener('mouseup', onEnd);
+
+        // Click handler - close action panel when clicking on device item, but allow action button clicks
+        wrapper.addEventListener('click', (e) => {
+            const actionButton = e.target.closest('.device-item-actions > div');
+            if (actionButton) {
+                // Let the action button's onclick handle it
+                return;
+            }
+            // If clicking on the device item and actions are visible, close them
+            if (e.target.closest('.device-item') && wrapper.classList.contains('delete-visible')) {
+                wrapper.classList.remove('delete-visible');
+                deviceItem.style.transition = 'transform 0.3s ease';
+                actionsPanel.style.transition = 'right 0.3s ease';
+                deviceItem.style.transform = '';
+                actionsPanel.style.right = '';
+                e.stopPropagation();
+            }
+        });
+    });
+}
+
+function deleteAccessory(id) {
+    if (confirm('Are you sure you want to delete this accessory?')) {
+        state.accessories = state.accessories.filter(a => a.id !== id);
+        saveAccessories();
+        showToast('Accessory deleted', 'success');
+    }
+}
+
+function showDeviceHistory(id) {
+    selectDevice(id);
+    showDevicePath();
+}
+
+function navigateToDevice(id) {
+    const latestLoc = state.locations
+        .filter(l => l.accessoryId === id)
+        .sort((a, b) => b.timestamp - a.timestamp)[0];
+
+    if (!latestLoc) {
+        showToast('No location data for this device', 'error');
+        return;
+    }
+
+    // Open Apple Maps with directions to the device location
+    const url = `https://maps.apple.com/?daddr=${latestLoc.lat},${latestLoc.lng}&dirflg=d`;
+    window.open(url, '_blank');
 }
 
 // ============================================
@@ -1274,14 +1596,14 @@ function updateMapMarkers() {
 
         const icon = L.divIcon({
             className: 'custom-marker',
-            html: `<div style="background: ${accessory.color}; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 18px;">${iconMap[accessory.icon] || '🏷️'}</div>`,
+            html: `<div style="background: ${accessory.color}; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 18px;">${getDisplayIcon(accessory)}</div>`,
             iconSize: [36, 36],
             iconAnchor: [18, 18]
         });
 
         const popupContent = `
             <div class="custom-popup">
-                <div class="custom-popup-icon">${iconMap[accessory.icon] || '🏷️'}</div>
+                <div class="custom-popup-icon">${getDisplayIcon(accessory)}</div>
                 <div class="custom-popup-name">${accessory.name}</div>
                 <div class="custom-popup-time">${new Date(latest.timestamp).toLocaleString()}</div>
                 <div style="font-size: 12px; margin-top: 4px;">Accuracy: ±${latest.accuracy}m</div>
@@ -1291,7 +1613,14 @@ function updateMapMarkers() {
 
         const marker = L.marker([latest.lat, latest.lng], { icon })
             .addTo(state.map)
-            .on('click', () => selectDevice(accessoryId));
+            .on('click', () => {
+                selectDevice(accessoryId);
+                showDevicePath();
+            });
+
+        // Store device ID on marker for filtering
+        marker.deviceId = accessoryId;
+        marker.getDeviceId = () => accessoryId;
 
         state.markers.push(marker);
     });
@@ -1347,13 +1676,14 @@ function importDeviceJson(event) {
             const hexColor = colorComponentsToHex(device.colorComponents);
             selectColor(hexColor);
 
-            const iconMapping = {
-                '': 'tag', 'tag': 'tag', 'key': 'key', 'bag': 'bag',
-                'backpack': 'bag', 'bike': 'bike', 'bicycle': 'bike',
-                'car': 'car', 'vehicle': 'car', 'pet': 'pet', 'dog': 'pet', 'cat': 'pet'
+            // Set icon emoji based on old icon mapping (empty by default, user can choose)
+            const iconEmojiMap = {
+                'tag': '🏷️', 'key': '🔑', 'bag': '🎒',
+                'backpack': '🎒', 'bike': '🚲', 'bicycle': '🚲',
+                'car': '🚗', 'vehicle': '🚗', 'pet': '🐕', 'dog': '🐕', 'cat': '🐱'
             };
-            const icon = iconMapping[device.icon] || 'tag';
-            selectIcon(icon);
+            // Leave the emoji field empty so user can choose their own
+            document.getElementById('accessoryIcon').value = '';
 
             state.importedIsActive = device.isActive !== undefined ? device.isActive : true;
 
@@ -1420,6 +1750,8 @@ function showToast(message, type = 'info') {
 // Expose functions globally for onclick handlers
 window.selectDevice = selectDevice;
 window.deleteAccessory = deleteAccessory;
+window.showDeviceHistory = showDeviceHistory;
+window.navigateToDevice = navigateToDevice;
 window.openAccessoryModal = openAccessoryModal;
 window.fetchLocations = fetchLocations;
 window.handleRefreshClick = handleRefreshClick;

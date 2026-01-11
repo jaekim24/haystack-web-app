@@ -189,6 +189,10 @@
                 </div>
                 <div class="setting-group">
                     <label for="accessoryColor">Color</label>
+                    <div class="color-inputs">
+                        <input type="color" id="colorSlider" value="#3B82F6">
+                        <input type="text" id="accessoryColor" placeholder="#3B82F6" maxlength="7">
+                    </div>
                     <div class="color-picker" id="colorPicker">
                         <button class="color-btn" data-color="#3B82F6" style="background: #3B82F6"></button>
                         <button class="color-btn" data-color="#EF4444" style="background: #EF4444"></button>
@@ -199,15 +203,9 @@
                     </div>
                 </div>
                 <div class="setting-group">
-                    <label for="accessoryIcon">Icon</label>
-                    <div class="icon-picker" id="iconPicker">
-                        <button class="icon-btn active" data-icon="tag">🏷️ Tag</button>
-                        <button class="icon-btn" data-icon="key">🔑 Key</button>
-                        <button class="icon-btn" data-icon="bag">🎒 Bag</button>
-                        <button class="icon-btn" data-icon="bike">🚲 Bike</button>
-                        <button class="icon-btn" data-icon="car">🚗 Car</button>
-                        <button class="icon-btn" data-icon="pet">🐕 Pet</button>
-                    </div>
+                    <label for="accessoryIcon">Icon (Emoji)</label>
+                    <input type="text" id="accessoryIcon" placeholder="e.g., 🏷️, 🔑, 🎒, 🚲, 🚗, 🐕" maxlength="4">
+                    <small style="display: block; margin-top: 4px; opacity: 0.7;">Enter any emoji or use your emoji keyboard</small>
                 </div>
             </div>
             <div class="modal-footer">

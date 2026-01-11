@@ -215,7 +215,7 @@ body {
 }
 
 .device-item-name {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 500;
     margin-bottom: 2px;
     white-space: nowrap;
@@ -230,6 +230,120 @@ body {
 
 .device-item-arrow {
     color: var(--secondary);
+    flex-shrink: 0;
+}
+
+/* Swipe-to-delete wrapper */
+.device-item-wrapper {
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 8px;
+    height: 72px;
+}
+
+.device-item {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    z-index: 2;
+    transition: transform 0.3s ease, background 0.2s;
+    cursor: pointer;
+}
+
+.device-item:active {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.device-item-delete {
+    position: absolute;
+    right: -160px;
+    top: 0;
+    bottom: 0;
+    width: 80px;
+    background: #ef4444;
+    color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    z-index: 3;
+    border-radius: 0 12px 12px 0;
+    transition: right 0.3s ease;
+}
+
+.device-item-actions {
+    position: absolute;
+    right: -240px;
+    top: 0;
+    bottom: 0;
+    width: 240px;
+    display: flex;
+    z-index: 3;
+    border-radius: 0 12px 12px 0;
+    transition: right 0.3s ease;
+}
+
+.device-item-navigate {
+    flex: 1;
+    background: #10b981;
+    color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 0 0 0 12px;
+}
+
+.device-item-navigate svg {
+    flex-shrink: 0;
+}
+
+.device-item-history {
+    flex: 1;
+    background: #3b82f6;
+    color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.device-item-history svg {
+    flex-shrink: 0;
+}
+
+.device-item-delete {
+    position: static;
+    flex: 1;
+    border-radius: 0 12px 12px 0;
+}
+
+.device-item-wrapper.delete-visible .device-item-actions {
+    right: 0;
+}
+
+.device-item-wrapper.delete-visible .device-item {
+    transform: translateX(-240px);
+}
+
+.device-item-delete svg {
     flex-shrink: 0;
 }
 
@@ -635,6 +749,34 @@ body {
    COLOR PICKER
    ============================================ */
 
+.color-inputs {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.color-inputs input[type="color"] {
+    width: 50px;
+    height: 40px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    background: none;
+}
+
+.color-inputs input[type="text"] {
+    flex: 1;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-dark);
+    border-radius: 8px;
+    color: white;
+    font-family: monospace;
+    font-size: 14px;
+    text-transform: uppercase;
+}
+
 .color-picker {
     display: flex;
     gap: 10px;
@@ -656,31 +798,6 @@ body {
 
 .color-btn.selected {
     border-color: white;
-}
-
-/* ============================================
-   ICON PICKER
-   ============================================ */
-
-.icon-picker {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.icon-btn {
-    padding: 10px 16px;
-    border: 2px solid var(--border-dark);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.08);
-    cursor: pointer;
-    font-size: 14px;
-    transition: border-color 0.2s;
-}
-
-.icon-btn.selected {
-    border-color: var(--primary);
-    background: rgba(0, 122, 255, 0.15);
 }
 
 /* ============================================
