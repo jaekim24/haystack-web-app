@@ -802,6 +802,34 @@ function formatTimeAgo(timestamp) {
     return `${days} day${days !== 1 ? 's' : ''} ago`;
 }
 
+/**
+ * Generate HTML for battery status indicator
+ * @param {string} batteryStatus - 'ok', 'medium', 'low', 'critical', or null/undefined
+ * @returns {string} HTML string for battery icon or empty string if no data
+ */
+function getBatteryIconHtml(batteryStatus) {
+    if (!batteryStatus) return '';
+
+    const fillLevels = {
+        'ok': 18,      // Full (18px inner width)
+        'medium': 13.5,  // 75%
+        'low': 9,      // 50%
+        'critical': 4.5  // 25%
+    };
+
+    const fillWidth = fillLevels[batteryStatus] || 18;
+
+    return `
+        <div class="battery-indicator ${batteryStatus}" title="Battery: ${batteryStatus}">
+            <svg viewBox="0 0 24 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="0.5" y="0.5" width="19" height="11" rx="2" stroke="currentColor" stroke-width="1"/>
+                <rect x="21" y="4" width="2.5" height="4" rx="0.5" fill="currentColor"/>
+                <rect class="battery-fill" x="2.5" y="2.5" width="${fillWidth}" height="7" rx="0.5"/>
+            </svg>
+        </div>
+    `;
+}
+
 // ============================================
 // DEVICE DETAIL PANEL
 // ============================================
@@ -1305,6 +1333,7 @@ function renderDevicesList() {
             .sort((a, b) => b.timestamp - a.timestamp)[0];
 
         const statusText = formatLocationStatus(latestLoc);
+        const batteryIcon = getBatteryIconHtml(latestLoc?.batteryStatus);
 
         return `
             <div class="device-item-wrapper" data-device-id="${accessory.id}">
@@ -1313,7 +1342,7 @@ function renderDevicesList() {
                         ${getDisplayIcon(accessory)}
                     </div>
                     <div class="device-item-info">
-                        <div class="device-item-name">${accessory.name}</div>
+                        <div class="device-item-name">${accessory.name}${batteryIcon}</div>
                         <div class="device-item-status">${statusText}</div>
                     </div>
                     <div class="device-item-arrow">
