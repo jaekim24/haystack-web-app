@@ -1,4 +1,4 @@
-# Macless Haystack - Device Tracker
+
 
 A web application for tracking your devices. Implements secp224r1 elliptic curve cryptography for decryption entirely in the browser.
 
