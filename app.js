@@ -424,7 +424,7 @@ function initPanelDrag() {
     let panelHeight = 0;
     let isExpanded = false;
 
-    const collapsedHeight = 180;
+    const collapsedHeight = 0;  // Panel fully hidden when collapsed
     const expandedHeight = window.innerHeight * 0.65;
 
     // Store state on panel element for cross-function access
@@ -456,8 +456,8 @@ function initPanelDrag() {
         // Calculate new height
         let newHeight = isExpanded ? expandedHeight + diff : collapsedHeight + diff;
 
-        // Constrain height
-        newHeight = Math.max(150, Math.min(expandedHeight, newHeight));
+        // Constrain height - allow 0 for fully collapsed
+        newHeight = Math.max(0, Math.min(expandedHeight, newHeight));
         panel.style.height = newHeight + 'px';
     }
 
@@ -467,7 +467,7 @@ function initPanelDrag() {
         panel.classList.remove('dragging');
 
         const currentHeight = panel.offsetHeight;
-        const middleThreshold = (collapsedHeight + expandedHeight) / 2;
+        const middleThreshold = expandedHeight / 2;  // Threshold for snap decision
 
         // Snap to expanded or collapsed based on current position
         if (currentHeight > middleThreshold) {
@@ -526,8 +526,11 @@ function initEventListeners() {
     document.getElementById('devicesBtn').addEventListener('click', handleDevicesBtn);
     document.getElementById('settingsBtn').addEventListener('click', openSettingsModal);
 
-    // Panel swipe/drag functionality
-    initPanelDrag();
+    // Panel swipe/drag functionality - DISABLED
+    // initPanelDrag();
+
+    // Start with panel hidden
+    document.getElementById('bottomPanel').classList.add('hidden');
 
     // Settings modal
     document.getElementById('closeSettingsBtn').addEventListener('click', closeSettingsModal);
@@ -1360,9 +1363,11 @@ function initDeviceSwipeGestures() {
         const deviceId = wrapper.getAttribute('data-device-id');
 
         let startX = 0;
+        let startY = 0;
         let startTime = 0;
         let hasMoved = false;
         let isGestureActive = false;
+        let isHorizontalSwipe = false;
         let longPressTimer = null;
         const swipeThreshold = 200; // Need to swipe 200px to reveal buttons
         const tapThreshold = 10; // Movement less than this is considered a tap
@@ -1376,8 +1381,11 @@ function initDeviceSwipeGestures() {
             }
 
             isGestureActive = true;
+            isHorizontalSwipe = false;
             hasMoved = false;
-            startX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            const touch = e.type.includes('mouse') ? e : e.touches[0];
+            startX = touch.clientX;
+            startY = touch.clientY;
             startTime = Date.now();
             deviceItem.style.transition = 'none';
             actionsPanel.style.transition = 'none';
@@ -1399,11 +1407,25 @@ function initDeviceSwipeGestures() {
             // Only handle move if we started a gesture (not clicking action buttons)
             if (!isGestureActive) return;
 
-            const currentX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
-            const diff = currentX - startX;
+            const touch = e.type.includes('mouse') ? e : e.touches[0];
+            const currentX = touch.clientX;
+            const currentY = touch.clientY;
+            const diffX = currentX - startX;
+            const diffY = currentY - startY;
+
+            // Determine if this is a horizontal or vertical gesture
+            if (!isHorizontalSwipe && Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > tapThreshold) {
+                // This is a horizontal swipe - prevent vertical scrolling
+                isHorizontalSwipe = true;
+            }
+
+            // If we've determined this is a horizontal swipe, prevent default scrolling
+            if (isHorizontalSwipe) {
+                e.preventDefault();
+            }
 
             // Check if moved past tap threshold
-            if (Math.abs(diff) > tapThreshold) {
+            if (Math.abs(diffX) > tapThreshold) {
                 hasMoved = true;
                 // Cancel long press if moved
                 if (longPressTimer) {
@@ -1413,11 +1435,9 @@ function initDeviceSwipeGestures() {
             }
 
             // Only track swipes to the left (negative diff) and past tap threshold
-            if (diff < -tapThreshold) {
-                // Prevent default scrolling when handling horizontal swipe gesture
-                e.preventDefault();
+            if (diffX < -tapThreshold) {
                 // Limit the swipe to 240px max
-                const limitedDiff = Math.max(diff, -240);
+                const limitedDiff = Math.max(diffX, -240);
                 deviceItem.style.transform = `translateX(${limitedDiff}px)`;
                 actionsPanel.style.right = `${-240 + Math.abs(limitedDiff)}px`;
             }
@@ -1430,8 +1450,9 @@ function initDeviceSwipeGestures() {
                 longPressTimer = null;
             }
 
-            // Reset gesture active flag
+            // Reset gesture flags
             isGestureActive = false;
+            isHorizontalSwipe = false;
 
             // If it was just a tap (no significant movement), don't do anything - let the click handler work
             if (!hasMoved) {

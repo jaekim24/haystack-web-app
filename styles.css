@@ -69,6 +69,7 @@ body {
 .bottom-panel {
     position: fixed;
     bottom: 72px;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
     left: 12px;
     right: 12px;
     z-index: 100;
@@ -77,13 +78,18 @@ body {
     -webkit-backdrop-filter: blur(20px);
     border-radius: 20px 20px 0 0;
     padding: 8px 16px 16px;
-    height: 180px;
+    /* Start hidden (0 height) */
+    height: 0;
+    min-height: 0;
+    max-height: calc(100vh - 100px - env(safe-area-inset-bottom, 0px));
     overflow: hidden;
     transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    padding-top: 0; /* Hide handle when collapsed */
 }
 
 .bottom-panel.expanded {
-    height: 65vh;
+    height: 70vh; /* Show when expanded */
+    padding-top: 8px; /* Show handle */
 }
 
 .bottom-panel.dragging {
@@ -102,12 +108,16 @@ body {
     background: rgba(255, 255, 255, 0.3);
     border-radius: 3px;
     margin: 0 auto 12px;
+    /* Hide handle since drag is disabled */
+    display: none;
 }
 
 .devices-section {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    /* Fill the entire panel height */
+    height: 100%;
 }
 
 .devices-header {
@@ -168,7 +178,9 @@ body {
     flex-direction: column;
     gap: 8px;
     overflow-y: auto;
-    max-height: calc(180px - 110px);
+    /* Use flex to fill available space */
+    flex: 1 1 0;
+    min-height: 0; /* Important for flex child scrolling */
     padding: 4px 0;
     /* Hide scrollbar but keep functionality */
     scrollbar-width: none;
@@ -177,10 +189,6 @@ body {
 
 .devices-list::-webkit-scrollbar {
     display: none;
-}
-
-.bottom-panel.expanded .devices-list {
-    max-height: calc(65vh - 110px);
 }
 
 .device-item {
@@ -192,6 +200,8 @@ body {
     border-radius: 12px;
     cursor: pointer;
     transition: background 0.2s;
+    flex-shrink: 0; /* Prevent shrinking */
+    min-height: 68px; /* Ensure minimum height */
 }
 
 .device-item:active {
@@ -238,7 +248,8 @@ body {
     position: relative;
     overflow: hidden;
     margin-bottom: 8px;
-    height: 72px;
+    /* Remove fixed height, use min-height instead */
+    min-height: 72px;
 }
 
 .device-item {
@@ -948,4 +959,26 @@ body {
 .empty-state-subtext {
     font-size: 14px;
     opacity: 0.7;
+}
+
+/* ============================================
+   IPHONE 15 PRO MAX OPTIMIZATIONS
+   ============================================ */
+
+/* iPhone 15 Pro Max and similar large phones */
+@media (min-width: 420px) and (max-width: 450px) and (min-height: 900px) {
+    .bottom-panel.expanded {
+        height: 75vh; /* More space on larger screen */
+    }
+
+    .device-item {
+        min-height: 72px;
+        padding: 14px 16px; /* Larger touch targets */
+    }
+
+    .device-item-icon {
+        width: 48px;
+        height: 48px;
+        font-size: 24px;
+    }
 }
