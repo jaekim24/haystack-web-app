@@ -9,7 +9,7 @@ const state = {
     accessories: [],
     locations: [],
     settings: {
-        endpointUrl: 'http://localhost:6176',
+        endpointUrl: 'https://localhost:6176/getLocationReports',
         endpointUser: '',
         endpointPass: '',
         daysToFetch: 7,
