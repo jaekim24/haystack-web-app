@@ -14,14 +14,18 @@ const state = {
         endpointPass: '',
         daysToFetch: 7,
         fetchOnStartup: true,
-        darkMode: false
+        darkMode: false,
+        autoRefresh: true,
+        autoRefreshInterval: 60  // seconds
     },
     map: null,
     markers: [],
     pathPolylines: [],
     currentAccessoryId: null,
     selectedColor: '#3B82F6',
-    selectedDeviceId: null
+    selectedDeviceId: null,
+    autoRefreshTimer: null,
+    lastFetchTime: null
 };
 
 // Icon mapping (for backward compatibility with old devices)
@@ -374,6 +378,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initMap();
     initEventListeners();
     applyDarkMode();
+    startAutoRefresh();
 
     // Set default state: map view with devices panel hidden
     const panel = document.getElementById('bottomPanel');
@@ -605,6 +610,34 @@ function initEventListeners() {
         applyDarkMode();
         saveSettings();
     });
+
+    // Auto-refresh toggle
+    const autoRefreshCheckbox = document.getElementById('autoRefresh');
+    if (autoRefreshCheckbox) {
+        autoRefreshCheckbox.addEventListener('change', (e) => {
+            state.settings.autoRefresh = e.target.checked;
+            if (state.settings.autoRefresh) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        });
+    }
+
+    // Auto-refresh interval change
+    const autoRefreshIntervalInput = document.getElementById('autoRefreshInterval');
+    if (autoRefreshIntervalInput) {
+        autoRefreshIntervalInput.addEventListener('change', (e) => {
+            let val = parseInt(e.target.value);
+            if (val < 10) val = 10; // Minimum 10 seconds
+            if (val > 600) val = 600; // Maximum 10 minutes
+            e.target.value = val;
+            state.settings.autoRefreshInterval = val;
+            if (state.settings.autoRefresh) {
+                startAutoRefresh(); // Restart with new interval
+            }
+        });
+    }
 }
 
 // ============================================
@@ -1071,6 +1104,8 @@ function loadSettings() {
     document.getElementById('daysToFetch').value = state.settings.daysToFetch;
     document.getElementById('fetchOnStartup').checked = state.settings.fetchOnStartup;
     document.getElementById('darkMode').checked = state.settings.darkMode;
+    document.getElementById('autoRefresh').checked = state.settings.autoRefresh;
+    document.getElementById('autoRefreshInterval').value = state.settings.autoRefreshInterval;
 }
 
 function saveSettings() {
@@ -1080,8 +1115,17 @@ function saveSettings() {
     state.settings.daysToFetch = parseInt(document.getElementById('daysToFetch').value);
     state.settings.fetchOnStartup = document.getElementById('fetchOnStartup').checked;
     state.settings.darkMode = document.getElementById('darkMode').checked;
+    state.settings.autoRefresh = document.getElementById('autoRefresh').checked;
+    state.settings.autoRefreshInterval = parseInt(document.getElementById('autoRefreshInterval').value) || 60;
 
     localStorage.setItem('haystackSettings', JSON.stringify(state.settings));
+
+    // Restart auto-refresh with new settings
+    stopAutoRefresh();
+    if (state.settings.autoRefresh) {
+        startAutoRefresh();
+    }
+
     closeSettingsModal();
     showToast('Settings saved', 'success');
 }
@@ -1125,6 +1169,38 @@ function applyDarkMode() {
         document.body.classList.add('dark-mode');
     } else {
         document.body.classList.remove('dark-mode');
+    }
+}
+
+// ============================================
+// AUTO-REFRESH
+// ============================================
+
+function startAutoRefresh() {
+    stopAutoRefresh(); // Clear any existing timer
+
+    if (!state.settings.autoRefresh) {
+        return;
+    }
+
+    const intervalMs = state.settings.autoRefreshInterval * 1000;
+    console.log(`Auto-refresh enabled: every ${state.settings.autoRefreshInterval}s`);
+
+    state.autoRefreshTimer = setInterval(async () => {
+        console.log('Auto-refreshing locations...');
+        try {
+            await fetchLocations(true); // true = isAutoRefresh
+        } catch (error) {
+            console.error('Auto-refresh error:', error);
+        }
+    }, intervalMs);
+}
+
+function stopAutoRefresh() {
+    if (state.autoRefreshTimer) {
+        clearInterval(state.autoRefreshTimer);
+        state.autoRefreshTimer = null;
+        console.log('Auto-refresh stopped');
     }
 }
 
@@ -1568,12 +1644,14 @@ function navigateToDevice(id) {
 // LOCATION FETCHING
 // ============================================
 
-async function fetchLocations() {
+async function fetchLocations(isAutoRefresh = false) {
     const days = state.settings.daysToFetch;
     const activeAccessories = state.accessories.filter(a => a.active);
 
     if (activeAccessories.length === 0) {
-        showToast('No active devices to fetch', 'warning');
+        if (!isAutoRefresh) {
+            showToast('No active devices to fetch', 'warning');
+        }
         return;
     }
 
@@ -1610,9 +1688,16 @@ async function fetchLocations() {
         allLocations.sort((a, b) => a.timestamp - b.timestamp);
 
         state.locations = allLocations;
+        state.lastFetchTime = Date.now();
         updateMapMarkers();
         renderDevicesList();
-        showToast(`Fetched ${allLocations.length} location(s)`, 'success');
+
+        // Only show toast for manual refresh, not auto-refresh
+        if (!isAutoRefresh) {
+            showToast(`Fetched ${allLocations.length} location(s)`, 'success');
+        } else {
+            console.log(`Auto-refresh: ${allLocations.length} location(s)`);
+        }
 
         if (allLocations.length > 0) {
             const group = new L.featureGroup(state.markers);
@@ -1620,7 +1705,9 @@ async function fetchLocations() {
         }
     } catch (error) {
         console.error('Error fetching locations:', error);
-        showToast(`Failed to fetch: ${error.message}`, 'error');
+        if (!isAutoRefresh) {
+            showToast(`Failed to fetch: ${error.message}`, 'error');
+        }
     }
 }
 
