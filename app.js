@@ -541,6 +541,7 @@ function initEventListeners() {
     document.getElementById('closeSettingsBtn').addEventListener('click', closeSettingsModal);
     document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
     document.getElementById('testConnectionBtn').addEventListener('click', testEndpointConnection);
+    document.getElementById('resetSettingsBtn').addEventListener('click', resetAllSettings);
 
     // Accessory modal
     document.getElementById('closeAccessoryBtn').addEventListener('click', closeAccessoryModal);
@@ -1201,6 +1202,14 @@ function stopAutoRefresh() {
         clearInterval(state.autoRefreshTimer);
         state.autoRefreshTimer = null;
         console.log('Auto-refresh stopped');
+    }
+}
+
+function resetAllSettings() {
+    if (confirm('This will clear all settings and devices. Are you sure?')) {
+        localStorage.removeItem('haystackSettings');
+        localStorage.removeItem('haystackAccessories');
+        location.reload();
     }
 }
 
