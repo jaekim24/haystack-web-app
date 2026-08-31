@@ -256,8 +256,7 @@ async function decryptReport(report, privateKeyBase64) {
         const tag = payloadData.slice(72);
 
         const seenTimeStamp = new DataView(payloadData.buffer).getUint32(0, false);
-        const timestamp = new Date(Date.UTC(2001, 0, 1));
-        timestamp.setSeconds(seenTimeStamp);
+        const timestamp = new Date((seenTimeStamp + 978307200) * 1000);
         const confidence = payloadData[4];
 
         const sharedSecret = await ecdh(ephemeralKeyBytes, privateKeyBase64);
